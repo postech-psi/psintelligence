@@ -1,0 +1,67 @@
+{
+  "n_flights": 200,
+  "dt": 0.02,
+  "n_jobs": -1,
+  "generated_at": "2026-03-06T23:11:52.274686",
+  "env_params": {
+    "wind_speed": {
+      "mean": 5.0,
+      "std": 5.0,
+      "min": 0.0,
+      "max": 20.0,
+      "unit": "m/s"
+    },
+    "wind_direction": {
+      "mean": 0.0,
+      "std": 180.0,
+      "min": 0.0,
+      "max": 360.0,
+      "unit": "deg"
+    },
+    "launch_angle": {
+      "mean": 85.0,
+      "std": 10.0,
+      "min": 75.0,
+      "max": 95.0,
+      "unit": "deg"
+    },
+    "air_density": {
+      "mean": 1.225,
+      "std": 0.05,
+      "min": 1.1,
+      "max": 1.3,
+      "unit": "kg/m\u00b3"
+    },
+    "mass_error": {
+      "mean": 0.0,
+      "std": 0.5,
+      "min": -0.3,
+      "max": 0.3,
+      "unit": "kg"
+    },
+    "Cd_error": {
+      "mean": 0.0,
+      "std": 0.2,
+      "min": -0.2,
+      "max": 0.3,
+      "unit": ""
+    }
+  },
+  "noise_spec": {
+    "altitude": {
+      "std": 1.5,
+      "resolution": 0.5,
+      "mach_anomaly_std": 15.0
+    },
+    "acceleration": {
+      "std": 0.2,
+      "bias_std": 0.5,
+      "resolution": 0.05
+    },
+    "gyro": {
+      "std": 0.08,
+      "bias_std": 0.03,
+      "resolution": 0.001
+    }
+  }
+}
