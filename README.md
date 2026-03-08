@@ -160,26 +160,6 @@ uv pip install jupyterlab ipywidgets
 uv pip install mamba-ssm onnx onnxruntime
 ```
 
-### 4. Jupyter Kernel 등록
-
-```bash
-# psintel 환경을 Jupyter 에서 선택 가능하도록 등록
-python -m ipykernel install --user --name psintel --display-name "Python (psintel)"
-```
-
-### 5. 환경 변수 설정 (선택)
-
-`.env` 파일 생성:
-
-```bash
-# .env
-DATA_PATH=./data/simulated/
-MODEL_PATH=./models/
-DEVICE=cuda
-WINDOW_SIZE=100
-DROPOUT_SAMPLES=100
-```
-
 ---
 
 ## 빠른 시작
@@ -192,10 +172,7 @@ cd psintelligence
 # 2. 가상환경 활성화
 micromamba activate psintel
 
-# 3. 데이터 생성 (Step 1.5)
-python src/data/generate_trajectories.py --num_flights 100
-
-# 4. Step 1.5 부터 순차적 실행
+# 3. Step 1.5 부터 순차적 실행
 # Step 1 은 pdf 파일로 대체
 jupyter notebook
 ```
@@ -214,7 +191,7 @@ jupyter notebook
 
 ---
 
-## 참고 문헌
+## 주요 참고 문헌
 
 | Step | 논문 | 저자 | 학회 |
 |------|------|------|------|
@@ -244,5 +221,6 @@ jupyter notebook
 - **이메일**: dongdong0615@postech.ac.kr / sungwon.lee.2002@gmail.com
 
 ---
+
 
 > **PSI 후배들이 AI를 접하고 공부하는데 도움이 되기를 바랍니다.**
