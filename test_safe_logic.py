@@ -161,6 +161,7 @@ if __name__ == "__main__":
         test_l1_immediate_abort,
         test_hysteresis_requires_5_clean,
         test_hysteresis_reset_on_new_flag,
+        test_hysteresis_release_clears_buffer,
         test_l0_helpers,
         test_l1_chi2_helper,
         test_l2_cp_helper,
