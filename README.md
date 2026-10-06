@@ -32,6 +32,9 @@ Step 1 → Step 2 → Step 3 → Step 4 → Step 5 → Step 6
 
 ---
 
+> **Step 1.5** (데이터 생성) 는 선택 단계입니다. 동봉된 `data/simulated/` 데이터로 Step 2~6 을 바로 실행할 수 있습니다.
+
+
 ## 각 Step 상세 설명
 
 ### [Step 1] Linear Kalman Filter: 상태 추정의 기초
@@ -47,6 +50,22 @@ Step 1 → Step 2 → Step 3 → Step 4 → Step 5 → Step 6
 - `101-1 기초확률론 & 선형칼만필터.pdf`: pdf 자료
 
 ---
+
+### [Step 1.5] 시뮬레이션 데이터 생성 — 선택 단계
+
+**목표:** AI 학습용 시뮬레이션 궤적 데이터셋 생성 (200편)
+
+**핵심 내용:**
+- 몬테카를로 샘플링 (질량, Cd, 발사각, 풍속, 무게중심 편심, 핀 캔트각)
+- 센서 노이즈 모델링 (고도·가속도·자이로), 해상도 양자화
+- 물리 기반 라벨 생성 (`h_theoretical`, `energy_ratio`)
+
+**필요 환경:** `requirements-full.txt` (RocketPy). 기본 경로에는 불필요합니다.
+
+> 동봉 데이터 스키마와 알려진 결함은 `data/SCHEMA.md` 를 참조하세요.
+
+---
+
 
 ### [Step 2] EKF & UKF: 비선형 시스템 확장
 
@@ -146,36 +165,64 @@ micromamba activate psintel
 
 ### 3. uv 설치 및 의존성 설치
 
+의존성은 **핵심(Step 2~6)** 과 **전체(데이터 재생성 포함)** 두 가지로 나뉩니다.
+
 ```bash
 # uv 설치 (pip 대체제) < 훨씬 빠르고 가벼움
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# 의존성 설치 (pyproject.toml 기반)
-uv pip install -r requirements.txt
+# [기본] 핵심 의존성만 — 저장소에 동봉된 데이터로 Step 2~6 실행
+uv pip install -r requirements-core.txt
 
-# 또는 개별 설치
-uv pip install torch torchvision torchaudio
-uv pip install numpy pandas matplotlib scikit-learn
-uv pip install jupyterlab ipywidgets
-uv pip install mamba-ssm onnx onnxruntime
+# [선택] Step 1.5 로 데이터를 재생성하려면 전체 환경
+uv pip install -r requirements-full.txt
 ```
+
+| 파일 | 용도 | 포함 |
+|------|------|------|
+| `requirements-core.txt` | **기본.** Step 2~6 실행 | numpy, pandas, scipy, matplotlib, scikit-learn, joblib, torch, onnx, onnxruntime |
+| `requirements-full.txt` | 데이터 재생성 + 원본 환경 재현 | 위 + rocketpy, seaborn, jupyterlab 등 153개 pin |
+
+> `requirements.txt` 는 `requirements-core.txt` 를 가리킵니다. `pip install -r requirements.txt` 로도 동일하게 핵심 환경이 설치됩니다.
+> **RocketPy 는 기본 경로에 필요하지 않습니다.** RocketPy 는 `netCDF4`(h5py·C 라이브러리 의존) 등 무거운 패키지를 끌어오며, Step 1.5 의 데이터 재생성에만 쓰입니다.
+
 
 ---
 
 ## 빠른 시작
+
+**기본 경로 — 데이터는 이미 들어 있습니다. RocketPy 설치 없이 바로 시작하세요.**
 
 ```bash
 # 1. 저장소 클론
 git clone https://github.com/postech-psi/psintelligence.git
 cd psintelligence
 
-# 2. 가상환경 활성화
+# 2. 가상환경 생성 / 활성화
+micromamba create -n psintel python=3.10 -c conda-forge
 micromamba activate psintel
 
-# 3. Step 1.5 부터 순차적 실행
-# Step 1 은 pdf 파일로 대체
+# 3. 핵심 의존성만 설치 (RocketPy 불필요)
+uv pip install -r requirements-core.txt
+
+# 4. Step 2 부터 순차 실행  (Step 1 은 pdf, Step 1.5 는 선택)
 jupyter notebook
 ```
+
+**Step 1.5 (데이터 재생성) 는 선택 단계입니다.** `data/simulated/` 에 200편 시뮬레이션 데이터와
+학습된 모델이 이미 포함되어 있어, Step 2~6 을 그대로 실행할 수 있습니다.
+직접 데이터를 만들어보고 싶을 때만 아래를 추가로 설치하고 노트북 상단의 `REGENERATE = True` 로 바꾸세요.
+
+```bash
+uv pip install -r requirements-full.txt   # rocketpy, seaborn 포함
+```
+
+데이터를 수정하거나 재생성한 뒤에는 무결성 검증을 실행하세요.
+
+```bash
+python scripts/verify_dataset.py
+```
+
 
 ---
 

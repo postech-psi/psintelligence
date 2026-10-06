@@ -1,0 +1,21 @@
+# PSIntelligence — 핵심 의존성 (Step 2~6 실행용)
+#
+# 목적: 저장소에 동봉된 data/simulated/ 데이터를 그대로 사용해
+#       AI 파이프라인(Step 2~6)만 돌리는 최소 환경.
+#
+#   pip install -r requirements-core.txt
+#   (또는 pip install -r requirements.txt — 동일)
+#
+# Step 1.5 로 데이터를 "재생성" 하려면 추가로 rocketpy, seaborn 이 필요합니다.
+#   pip install -r requirements-full.txt
+#   (RocketPy 는 netCDF4/scipy/matplotlib 등 무거운 의존성을 끌어옵니다)
+
+numpy>=1.24
+pandas>=2.0
+scipy>=1.10          # Step 2 (EKF/UKF)
+matplotlib>=3.7
+scikit-learn>=1.3    # Step 3~5
+joblib>=1.3          # Step 4~5
+torch>=2.0           # Step 3~6
+onnx>=1.15           # Step 6
+onnxruntime>=1.17    # Step 6
