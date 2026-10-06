@@ -115,7 +115,8 @@ def main() -> int:
     print(f"\n생성 완료: {len(meta_rows)}편 / {len(traj_rows)}행 / {wall:.1f}s")
     print(f"  {os.path.join(args.out, 'all_trajectories.csv.gz')}")
     print(f"  {os.path.join(args.out, 'flight_metadata.csv.gz')}")
-    print(f"\n검증:  python scripts/verify_dataset.py --data-dir {os.path.relpath(args.out, ROOT)}")
+    shown = os.path.relpath(args.out, ROOT) if os.path.abspath(args.out).startswith(ROOT) else args.out
+    print(f"\n검증:  python scripts/verify_dataset.py --data-dir {shown}")
     print("\n주의: gyro_yaw 는 2D 축소 모델이라 0 으로 채워집니다 (SCHEMA.md §3.2 참조).")
     return 0
 
