@@ -211,17 +211,26 @@ jupyter notebook
 
 **Step 1.5 (데이터 재생성) 는 선택 단계입니다.** `data/simulated/` 에 200편 시뮬레이션 데이터와
 학습된 모델이 이미 포함되어 있어, Step 2~6 을 그대로 실행할 수 있습니다.
-직접 데이터를 만들어보고 싶을 때만 아래를 추가로 설치하고 노트북 상단의 `REGENERATE = True` 로 바꾸세요.
+
+데이터를 직접 만들어보고 싶다면 두 가지 경로가 있습니다.
 
 ```bash
+# (A) 자체 시뮬레이터 — RocketPy 불필요, 표준 라이브러리만 (200편 약 2.3초)
+python scripts/generate_dataset.py
+python scripts/verify_dataset.py --data-dir data/generated
+
+# (B) 원본 경로 — RocketPy 로 step1.5 노트북 실행
 uv pip install -r requirements-full.txt   # rocketpy, seaborn 포함
 ```
 
 데이터를 수정하거나 재생성한 뒤에는 무결성 검증을 실행하세요.
 
 ```bash
-python scripts/verify_dataset.py
+python scripts/verify_dataset.py                 # 정본 검사 (21항목)
+python scripts/verify_dataset.py --data-dir <경로>  # 생성 데이터 검사
 ```
+
+> 스키마·알려진 결함·재현 모델: [`data/SCHEMA.md`](data/SCHEMA.md)
 
 
 ---

@@ -9,6 +9,7 @@ data/SCHEMA.md §6 의 검사 항목을 수행합니다.
 """
 from __future__ import annotations
 
+import argparse
 import csv
 import gzip
 import io
@@ -17,8 +18,14 @@ import os
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SIM = os.path.join(ROOT, "data", "simulated")
 G = 9.81
+META_OPTIONAL_COLS = {"wind_direction"}     # 생성기가 추가하는 컬럼 (결함 D10 대응)
+
+_ap = argparse.ArgumentParser(description="PSIntelligence 데이터셋 무결성 검증")
+_ap.add_argument("--data-dir", default=os.path.join(ROOT, "data", "simulated"),
+                 help="검증할 디렉터리 (기본 data/simulated)")
+_args = _ap.parse_args()
+SIM = _args.data_dir if os.path.isabs(_args.data_dir) else os.path.join(ROOT, _args.data_dir)
 
 # 정본(파이프라인이 읽는 파일)
 CANON_TRAJ = os.path.join(SIM, "all_trajectories.csv.gz")
@@ -71,7 +78,7 @@ def load(path: str, expect_gzip: bool | None = None) -> list[dict]:
 
 
 print("=" * 62)
-print("PSIntelligence 데이터셋 무결성 검증")
+print(f"PSIntelligence 데이터셋 무결성 검증 — {os.path.relpath(SIM, ROOT)}")
 print("=" * 62)
 
 # ---- 1. 존재 / 형식 -------------------------------------------------
@@ -88,10 +95,12 @@ meta = load(CANON_META, expect_gzip=True)
 
 # ---- 2. 커버리지 -----------------------------------------------------
 print("\n[2] 스키마·커버리지")
-check("정본 궤적 컬럼 집합 일치", set(traj[0]) == CANON_TRAJ_COLS,
+check("궤적 컬럼 집합 일치", set(traj[0]) == CANON_TRAJ_COLS,
       f"차이 {set(traj[0]) ^ CANON_TRAJ_COLS}" if set(traj[0]) != CANON_TRAJ_COLS else "")
-check("정본 메타 컬럼 집합 일치", set(meta[0]) == CANON_META_COLS,
-      f"차이 {set(meta[0]) ^ CANON_META_COLS}" if set(meta[0]) != CANON_META_COLS else "")
+_missing = CANON_META_COLS - set(meta[0])
+_extra = set(meta[0]) - CANON_META_COLS - META_OPTIONAL_COLS
+check("메타 컬럼 집합 일치 (필수 전부 + 허용 외 추가 없음)", not _missing and not _extra,
+      f"누락 {sorted(_missing)} / 예상외 {sorted(_extra)}" if (_missing or _extra) else "")
 
 mids = sorted(int(r["flight_id"]) for r in meta)
 tids = sorted({int(r["flight_id"]) for r in traj})

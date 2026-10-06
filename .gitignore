@@ -2,3 +2,6 @@
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+
+# 자체 시뮬레이터 생성 데이터 (scripts/generate_dataset.py 로 약 2.3초에 재생성)
+data/generated/

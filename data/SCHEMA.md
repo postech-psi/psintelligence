@@ -210,7 +210,28 @@ python scripts/verify_dataset.py
 
 ---
 
-## 7. 데이터 재생성
+## 7. 데이터 재생성 — 두 경로
+
+### (A) 자체 시뮬레이터 — **RocketPy 불필요** (권장)
+
+```bash
+python scripts/generate_dataset.py                       # 200편 -> data/generated/
+python scripts/generate_dataset.py --n 50 --seed 7       # 소규모/재현
+python scripts/verify_dataset.py --data-dir data/generated
+```
+
+- 표준 라이브러리만 사용. 200편을 **약 2.3초**에 생성합니다.
+- 정본과 동일한 스키마(`all_trajectories.csv.gz` + `flight_metadata.csv.gz`)로 씁니다.
+- 기본 출력이 `data/generated/` 이므로 **정본을 덮어쓰지 않습니다.**
+- 정본 대비 실측: 아포지 \|median\| 0.33%, tilt 비행별 평균오차 median 0.92도,
+  gyro_roll 비행별 상관 median 0.934, 노이즈 스펙 3자리 일치.
+- **알려진 차이** (SCHEMA.md §3.2 의 축소 모델 한계):
+  · `gyro_yaw` 는 2D 모델이라 **0** 으로 채워집니다 (파이프라인 미사용 컬럼)
+  · `tilt_angle` 이 드물게 +2도까지 나옵니다 (정본은 전부 음수) — 감쇠비 0.2 의 과도 응답
+  · `gyro_pitch`·`gyro_roll` 의 범위가 정본보다 좁습니다 (정본 ±2.30 / ±0.85 → 생성 ±1.3 / ±0.64)
+- `wind_direction` 컬럼이 메타데이터에 포함됩니다 (정본의 결함 D10 대응).
+
+### (B) 원본 경로 — RocketPy
 
 ```bash
 pip install -r requirements-full.txt   # rocketpy, seaborn 포함
@@ -218,5 +239,6 @@ jupyter notebook "step1.5-data generation.ipynb"
 ```
 
 - Step 1.5 는 **선택 단계**입니다. 동봉 데이터로 Step 2~6 을 바로 실행할 수 있습니다.
-- ⚠️ **재생성은 기존 정본을 덮어씁니다.** `all_trajectories.csv.gz`, `flight_metadata.csv.gz`, 그리고 `data/motor/thrust_curve_from_pressure.csv` 를 같은 경로에 다시 씁니다. 먼저 백업하세요.
+- ⚠️ **재생성은 기존 정본을 덮어씁니다.** `all_trajectories.csv.gz`, `flight_metadata.csv.gz`,
+  `data/motor/thrust_curve_from_pressure.csv` 를 같은 경로에 다시 씁니다. 먼저 백업하세요.
 - 재생성 후 반드시 `scripts/verify_dataset.py` 를 돌리고, 실패하면 백업으로 되돌리세요.
