@@ -20,9 +20,10 @@
 ## 프로젝트 로드맵 (Step 1-6)
 
 ```
-Step 1 → Step 2 → Step 3 → Step 4 → Step 5 → Step 6
-  │         │         │         │         │         │
-  │         │         │         │         │         └─ 경량화 + ONNX
+Step 1 → Step 2 → Step 3 → Step 4 → Step 5 → Step 5.5 → Step 6
+  │         │         │         │         │         │        │
+  │         │         │         │         │         │        └─ 경량화 + ONNX
+  │         │         │         │         │         └─ 이상 탐지 (커널 + CP)
   │         │         │         │         └─ 불확실성 정량화 (MC Dropout)
   │         │         │         └─ 시계열 모델링 (GRU)
   │         │         └─ 물리 법칙 통합 (PINN)
@@ -33,6 +34,7 @@ Step 1 → Step 2 → Step 3 → Step 4 → Step 5 → Step 6
 ---
 
 > **Step 1.5** (데이터 생성) 는 선택 단계입니다. 동봉된 `data/simulated/` 데이터로 Step 2~6 을 바로 실행할 수 있습니다.
+> **Step 5.5** (이상 탐지) 는 `scripts/model_filter.py` · `scripts/generate_ood.py` 로 입력을 만들고 실행합니다.
 
 
 ## 각 Step 상세 설명
@@ -121,6 +123,48 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 **논문 기반:**
 - Gal & Ghahramani (2016). *Dropout as a Bayesian Approximation*. ICML.
 - Kendall & Gal (2017). *What Uncertainties Do We Need in Bayesian Deep Learning?* NIPS.
+
+---
+
+### [Step 5.5] 커널 기반 이상 탐지 + Conformal Prediction
+
+**목표:** 물리로 잡을 수 있는 오류는 **exact** 보장으로, 못 잡는 것은 **distribution-free** 보장으로
+
+**핵심 내용:**
+- **명목 물리모델 잔차** — 명목 질량·Cd·발사각으로 동역학을 적분해 비행체 이상을 드러냄
+  (Step 2 의 기구학 추적기는 측정 가속도를 입력으로 써서 파라미터 이탈을 못 잡음 — 실측 1.00x)
+- **L1 χ² 검정** — 잔차의 영평균 백색 가우시안 성질 (Mehra 1971)
+- **L2 OC-SVM(RBF) + CP** — 비가우시안·모델오차 잔차를 분포 무가정으로 처리
+- **비행 단위 CP calibration** — 창이 아니라 비행 단위. 창들은 상관되어 있어 실효 표본수가 비행 수에 불과
+- **Safe-Logic 2.0 연동** — L0/L1 결정적 우선, L2 는 N-of-M + 히스테리시스 (`safe_logic.py`)
+
+**실측 결과** (정상 200편 + OOD 50편, FPR 목표 ≤ 10%):
+
+| 방법 | FPR(비행) | TPR(비행) |
+|:--|:--:|:--:|
+| L1 χ² (비행 최대) | 12.0% | 62.0% |
+| OC-SVM + CP | **6.0%** | 54.0% |
+| **KDE + CP** | **6.0%** | **60.0%** |
+| kPCA + CP | 4.0% | 54.0% |
+
+계열별로는 질량 100% · 항력 67~93% · 저각 11~22% · 강풍 0~9% 로 **탐지가 계열 선택적**입니다.
+
+**입력 생성:**
+```bash
+python scripts/generate_ood.py      # 정상 범위를 벗어난 OOD 50편
+python scripts/model_filter.py      # 명목 물리모델 잔차 → residuals.npz
+```
+
+**논문 기반:**
+- Schölkopf et al. (2001). *Estimating the Support of a High-Dimensional Distribution*. Neural Computation. — OC-SVM
+- Tax & Duin (2004). *Support Vector Data Description*. Machine Learning. — SVDD
+- Vovk et al. (2005). *Algorithmic Learning in a Random World*. — Conformal Prediction
+- Angelopoulos & Bates (2021). *A Gentle Introduction to Conformal Prediction*. arXiv 2107.07511.
+- Mehra (1971). *On the Identification of Variances and Adaptive Kalman Filtering*. IEEE TAC.
+
+> ⚠️ **정직한 한계:** 시뮬 기반이라 CP 보장은 calibration 분포 안에서만 유효합니다. OOD 정의도
+> 파라미터 범위 이탈로 협소하고, 위상은 데이터가 아포지에서 잘려 2개(부스트/관성)뿐입니다.
+> 자세한 내용은 노트북 요약 절 참조.
 
 ---
 
