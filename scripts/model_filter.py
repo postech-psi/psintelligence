@@ -124,6 +124,8 @@ def main() -> int:
     ap.add_argument("--Q", type=float, default=1e-3, help="프로세스 노이즈 (기본 1e-3)")
     ap.add_argument("--R", type=float, default=4.0, help="측정 노이즈 (기본 4.0 = 2.0^2 m^2)")
     ap.add_argument("--no-ood", action="store_true", help="정상 데이터만 처리")
+    ap.add_argument("--ood-dir", default=os.path.join(ROOT, "data", "simulated", "ood"),
+                    help="OOD 세트 디렉터리 (기본 data/simulated/ood)")
     args = ap.parse_args()
 
     motor = Motor.from_csv(MOTOR_CSV)
@@ -134,8 +136,8 @@ def main() -> int:
     if args.no_ood:
         flat, fid, ood, typ = nf, nid, nood, ntyp
     else:
-        odf = pd.read_csv(os.path.join(ROOT, "data", "simulated", "ood", "ood_trajectories.csv.gz"))
-        ometa = pd.read_csv(os.path.join(ROOT, "data", "simulated", "ood", "ood_metadata.csv.gz"))
+        odf = pd.read_csv(os.path.join(args.ood_dir, "ood_trajectories.csv.gz"))
+        ometa = pd.read_csv(os.path.join(args.ood_dir, "ood_metadata.csv.gz"))
         types = dict(zip(ometa["flight_id"].astype(int), ometa["ood_type"]))
         of, oid, oood, otyp = collect(motor, odf, args.Q, args.R, 1, types)
         print(f"OOD  {len(oid)}편 / {len(of)}행")
