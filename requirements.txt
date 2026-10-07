@@ -1,8 +1,35 @@
-# 기본 설치 파일 — 핵심 의존성(Step 2~6)만 설치합니다.
+# PSIntelligence — 의존성 (단일 파일)
 #
 #   pip install -r requirements.txt
+#   (uv 를 쓴다면: uv pip install -r requirements.txt)
 #
-# · 데이터 재생성(Step 1.5)까지 하려면:  pip install -r requirements-full.txt
-# · 자세한 환경 안내: README.md 의 "환경 설정" 절 참조
+# 기본 경로(Step 2~6)에는 이 파일 하나만 있으면 됩니다.
+# 저장소에 동봉된 data/simulated/ 를 그대로 쓰므로 RocketPy 가 필요 없습니다.
 
--r requirements-core.txt
+# ---- 필수 (Step 2~6) ----
+numpy>=1.24
+pandas>=2.0
+scipy>=1.10          # Step 2  EKF / UKF
+matplotlib>=3.7
+scikit-learn>=1.3    # Step 3~5
+joblib>=1.3          # Step 4~5
+torch>=2.0           # Step 3~6
+onnx>=1.15           # Step 6  ONNX export
+onnxruntime>=1.17    # Step 6  추론 검증
+
+# ---- [선택] Step 1.5 로 데이터를 "재생성" 할 때만 ----
+# 아래 두 줄의 주석을 풀어 설치하세요. RocketPy 는 netCDF4 등 무거운
+# 패키지를 끌어오므로 기본 경로에서는 설치하지 않습니다.
+# 자체 시뮬레이터(scripts/generate_dataset.py)를 쓰면 RocketPy 없이도
+# 데이터를 만들 수 있습니다.
+#
+# rocketpy>=1.11
+# seaborn>=0.13
+
+# ---- [선택] 노트북 실행 환경 ----
+# 대부분의 환경에 이미 포함되어 있습니다.
+#
+# jupyterlab>=4.0
+
+# 환경 완전 재현: 2026-10 시점의 정확한 pin 153개는 git 이력에 보존되어 있습니다.
+#   git show 0937b37:requirements-full.txt

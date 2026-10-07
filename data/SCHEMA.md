@@ -234,7 +234,7 @@ python scripts/verify_dataset.py --data-dir data/generated
 ### (B) 원본 경로 — RocketPy
 
 ```bash
-pip install -r requirements-full.txt   # rocketpy, seaborn 포함
+pip install "rocketpy>=1.11" "seaborn>=0.13"   # 선택 의존성 (requirements.txt 참조)
 jupyter notebook "step1.5-data generation.ipynb"
 ```
 

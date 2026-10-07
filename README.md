@@ -60,7 +60,8 @@ Step 1 → Step 2 → Step 3 → Step 4 → Step 5 → Step 6
 - 센서 노이즈 모델링 (고도·가속도·자이로), 해상도 양자화
 - 물리 기반 라벨 생성 (`h_theoretical`, `energy_ratio`)
 
-**필요 환경:** `requirements-full.txt` (RocketPy). 기본 경로에는 불필요합니다.
+**필요 환경:** 기본 `requirements.txt` 로 충분합니다. `data/simulated/` 가 동봉되어 있어
+RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재생성할 때만 RocketPy 필요).
 
 > 동봉 데이터 스키마와 알려진 결함은 `data/SCHEMA.md` 를 참조하세요.
 
@@ -165,26 +166,26 @@ micromamba activate psintel
 
 ### 3. uv 설치 및 의존성 설치
 
-의존성은 **핵심(Step 2~6)** 과 **전체(데이터 재생성 포함)** 두 가지로 나뉩니다.
+의존성 파일은 **`requirements.txt` 하나**입니다. RocketPy 는 기본 경로에 필요하지 않으므로
+그 안에서 선택 항목으로 분리해 두었습니다.
 
 ```bash
 # uv 설치 (pip 대체제) < 훨씬 빠르고 가벼움
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# [기본] 핵심 의존성만 — 저장소에 동봉된 데이터로 Step 2~6 실행
-uv pip install -r requirements-core.txt
-
-# [선택] Step 1.5 로 데이터를 재생성하려면 전체 환경
-uv pip install -r requirements-full.txt
+# 기본 설치 — 이 한 줄이면 Step 2~6 을 모두 실행할 수 있습니다
+uv pip install -r requirements.txt
 ```
 
-| 파일 | 용도 | 포함 |
-|------|------|------|
-| `requirements-core.txt` | **기본.** Step 2~6 실행 | numpy, pandas, scipy, matplotlib, scikit-learn, joblib, torch, onnx, onnxruntime |
-| `requirements-full.txt` | 데이터 재생성 + 원본 환경 재현 | 위 + rocketpy, seaborn, jupyterlab 등 153개 pin |
+| 포함 범위 | 패키지 |
+|------|------|
+| **필수** (Step 2~6) | numpy, pandas, scipy, matplotlib, scikit-learn, joblib, torch, onnx, onnxruntime |
+| **[선택]** (Step 1.5 데이터 재생성) | rocketpy, seaborn — `requirements.txt` 안에서 주석을 풀어 설치 |
+| **[선택]** (노트북 실행) | jupyterlab — 대부분의 환경에 이미 포함 |
 
-> `requirements.txt` 는 `requirements-core.txt` 를 가리킵니다. `pip install -r requirements.txt` 로도 동일하게 핵심 환경이 설치됩니다.
 > **RocketPy 는 기본 경로에 필요하지 않습니다.** RocketPy 는 `netCDF4`(h5py·C 라이브러리 의존) 등 무거운 패키지를 끌어오며, Step 1.5 의 데이터 재생성에만 쓰입니다.
+> 자체 시뮬레이터(`scripts/generate_dataset.py`)를 쓰면 RocketPy 없이도 데이터를 생성할 수 있습니다.
+> 환경 완전 재현이 필요하면 정확한 pin 153개가 git 이력에 남아 있습니다: `git show 0937b37:requirements-full.txt`
 
 
 ---
@@ -203,7 +204,7 @@ micromamba create -n psintel python=3.10 -c conda-forge
 micromamba activate psintel
 
 # 3. 핵심 의존성만 설치 (RocketPy 불필요)
-uv pip install -r requirements-core.txt
+uv pip install -r requirements.txt
 
 # 4. Step 2 부터 순차 실행  (Step 1 은 pdf, Step 1.5 는 선택)
 jupyter notebook
@@ -220,7 +221,7 @@ python scripts/generate_dataset.py
 python scripts/verify_dataset.py --data-dir data/generated
 
 # (B) 원본 경로 — RocketPy 로 step1.5 노트북 실행
-uv pip install -r requirements-full.txt   # rocketpy, seaborn 포함
+uv pip install "rocketpy>=1.11" "seaborn>=0.13"   # 선택 의존성
 ```
 
 데이터를 수정하거나 재생성한 뒤에는 무결성 검증을 실행하세요.
