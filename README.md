@@ -148,27 +148,7 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 | KDE + CP | 6.0% | 60.0% |
 | kPCA + CP | 4.0% | 54.0% |
 
-계열별로는 질량 93 - 100% · 항력 67 - 100% · 저각 11 - 56% · 강풍 0 - 9% 로 탐지가 계열 선택적입니다.
-
-> ⚠️ 검출기 비교는 집계 규칙에 의존합니다. 위 표의 L1 은 N-of-M, 커널은 95분위 집계라
-> 규칙이 다릅니다. 같은 N-of-M 규칙으로 통일하면 L1 χ² 6.0%/68.0% vs OC-SVM 22.0%/56.0%.
-> 그러나 동일 FPR(10%) + 95분위 집계에서는 χ² 58% vs OC-SVM(크기 피처) 66% 로 뒤집힙니다.
->
-> 더 중요한 것은 이상 유형과 피처의 정합입니다 (반증 실험 (a), 모양형 OOD 50편):
->
-> | 이상 유형 | χ² (크기 통계) | OC-SVM (모양 피처) |
-> |:--|:--:|:--:|
-> | 크기 변화 (파라미터 이탈) | 58% | 18% |
-> | 모양 변화 (분산 동일) | 18% | 98% |
->
-> 모양형 OOD는 고도 잡음의 표본 σ를 1.5 m로 강제하고 모양만 바꾼 것입니다
-> (검증: 창 Σz² 중앙 비 0.98x = 분산 동일, lag-1 자기상관 −0.03 → +0.68).
-> → 검출기가 아니라 "피처 ∩ 이상 유형"이 지배하며, 두 채널은 실패 모드가 겹치지 않아
-> 병치하는 것이 정답입니다. 상세는 `PLAN_step5.5.md` 참조.
-
-L1 은 이론 임계를 쓸 수 없습니다. χ² 이론 임계는 잔차가 백색일 때만 성립하는데, 명목 모델
-잔차의 lag-1 자기상관이 +0.40 으로 유의합니다(실측). 이론 임계로는 창 FPR 이 34.4% 였고,
-임계를 calibration 창에서 재설정해 11.7% 로 맞췄습니다 (잔차 백색화는 남은 과제).
+계열별로는 질량 93 - 100% · 항력 67 - 100% · 저각 11 - 56% · 강풍 0 - 9% 로 탐지가 계열 선택적
 
 입력 생성:
 ```bash
@@ -177,15 +157,14 @@ python scripts/model_filter.py      # 명목 물리모델 잔차 → residuals.n
 ```
 
 논문 기반:
-- Schölkopf et al. (2001). *Estimating the Support of a High-Dimensional Distribution*. Neural Computation. — OC-SVM
-- Tax & Duin (2004). *Support Vector Data Description*. Machine Learning. — SVDD
-- Vovk et al. (2005). *Algorithmic Learning in a Random World*. — Conformal Prediction
-- Angelopoulos & Bates (2021). *A Gentle Introduction to Conformal Prediction*. arXiv 2107.07511.
-- Mehra (1971). *On the Identification of Variances and Adaptive Kalman Filtering*. IEEE TAC.
+- Schölkopf et al. (2001). Estimating the Support of a High-Dimensional Distribution. Neural Computation. — OC-SVM
+- Tax & Duin (2004). Support Vector Data Description. Machine Learning. — SVDD
+- Vovk et al. (2005). Algorithmic Learning in a Random World. — Conformal Prediction
+- Angelopoulos & Bates (2021). A Gentle Introduction to Conformal Prediction. arXiv 2107.07511.
+- Mehra (1971). On the Identification of Variances and Adaptive Kalman Filtering. IEEE TAC.
 
-> ⚠️ 정직한 한계: 시뮬 기반이라 CP 보장은 calibration 분포 안에서만 유효합니다. OOD 정의도
-> 파라미터 범위 이탈로 협소하고, 위상은 데이터가 아포지에서 잘려 2개(부스트/관성)뿐입니다.
-> 자세한 내용은 노트북 요약 절 참조.
+> 한계: 시뮬 기반이라 CP 보장은 calibration 분포 안에서만 유효하다. 
+> 자세한 내용은 노트북 참조.
 
 ---
 
@@ -216,7 +195,7 @@ python scripts/model_filter.py      # 명목 물리모델 잔차 → residuals.n
 curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj bin/micromamba
 
 # Windows (PowerShell)
-winget install mamba-org.micromamba
+winget install -e --id Mamba.Micromamba
 ```
 
 ### 2. 가상환경 생성
@@ -236,9 +215,13 @@ micromamba activate psintel
 
 ```bash
 # uv 설치 (pip 대체제) < 훨씬 빠르고 가벼움
+# Linux/macOS
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# 기본 설치 — 이 한 줄이면 Step 2~6 을 모두 실행할 수 있습니다
+# Windows (PowerShell)
+owershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# 기본 설치
 uv pip install -r requirements.txt
 ```
 
@@ -257,8 +240,6 @@ uv pip install -r requirements.txt
 
 ## 빠른 시작
 
-기본 경로 — 데이터는 이미 들어 있습니다. RocketPy 설치 없이 바로 시작하세요.
-
 ```bash
 # 1. 저장소 클론
 git clone https://github.com/postech-psi/psintelligence.git
@@ -276,9 +257,8 @@ jupyter notebook
 ```
 
 Step 1.5 (데이터 재생성) 는 선택 단계입니다. `data/simulated/` 에 200편 시뮬레이션 데이터와
-학습된 모델이 이미 포함되어 있어, Step 2~6 을 그대로 실행할 수 있습니다.
-
-데이터를 직접 만들어보고 싶다면 두 가지 경로가 있습니다.
+학습된 모델이 이미 포함되어 있어, Step 2~6 을 그대로 실행 가능
+데이터를 직접 만들어보고 싶다면 두 가지 경로가 존재함
 
 ```bash
 # (A) 자체 시뮬레이터 — RocketPy 불필요, 표준 라이브러리만 (200편 약 2.3초)
@@ -289,7 +269,7 @@ python scripts/verify_dataset.py --data-dir data/generated
 uv pip install "rocketpy>=1.11" "seaborn>=0.13"   # 선택 의존성
 ```
 
-데이터를 수정하거나 재생성한 뒤에는 무결성 검증을 실행하세요.
+데이터를 수정하거나 재생성한 뒤에는 무결성 검증을 실행 가능
 
 ```bash
 python scripts/verify_dataset.py                 # 정본 검사 (21항목)
