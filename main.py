@@ -51,7 +51,7 @@ class GRUModel(nn.Module):
 
     def forward(self, x, h_curr, v_z):
         out, _ = self.gru(x)
-        r = 1.0 + 0.7 * self.fc(out[:, -1, :]).squeeze(-1)
+        r = 1.0 + 0.2 * self.fc(out[:, -1, :]).squeeze(-1)
         return h_curr + (v_z ** 2) / (2 * G) * r, r
 
 

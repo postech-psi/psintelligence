@@ -81,7 +81,7 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 - UKF: Unscented Transform 으로 평균/공분산 전파
 - **교육 포인트:** 상태 전이와 측정이 상태에 대해 선형이므로 두 필터는 수치적으로 동일하다.
   UKF 의 UT 가 항등 변환이 되는 이유를 설명한다.
-- Bella Lui 실제 비행 데이터 검증
+- 시뮬레이션 200편 검증 (Bella Lui 수치는 외부 예시로만 인용)
 
 > 교재의 비선형 로켓 동역학(추력·항력·중력)은 §1.1 에 서술되어 있지만, 이 노트북의
 > 구현은 그 모델을 쓰지 않는다. 실제 비선형 f 구현은 Step 5.5 의 명목 물리모델 필터가 담당한다.
@@ -98,6 +98,9 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 - Stability Masking: 아포지 근처 (v→0) 수치 불안정성 제거
 - `energy_ratio` 는 0~1 로 유계가 아니다. 연소 중 r>1 은 추력 일 때문이며, `clip` 하지 않는다 (SCHEMA §2.1).
 
+> 실측: coast `r≤1` 제약을 추가해도 저속 구간 RMSE는 PINN 0.00794 vs Baseline 0.00192로,
+> PINN 우위가 아직 입증되지 않았다. 실제 비행에서도 PINN +1.85 m vs constant-r +1.67 m.
+
 논문 기반:
 - Raissi et al. (2019). *Physics-Informed Neural Networks*. Journal of Computational Physics.
 
@@ -113,6 +116,8 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 - Physics Wrapper: `h_apogee = h + v²/2g·r` 를 **학습 손실에도 포함** (r 손실 + 아포지 손실)
 - 스케일러는 train 비행에만 fit (누수 방지)
 
+> 실측(test 30비행/742창): GRU 아포지 MAE **8.75 m**, constant-r 기준선 **12.87 m** → **32.0% 개선**.
+
 논문 기반:
 - Chung et al. (2014). *Empirical Evaluation of Gated Recurrent Neural Networks*. arXiv:1412.3555.
 - Gers et al. (2000). *Learning to Forget: Continual Prediction with LSTM*. Neural Computation.
@@ -121,7 +126,10 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 
 ### [Step 5] Uncertainty Quantification: AI 의 자신감 측정
 
-목표: 예측 불확실성을 정량화하고, 그 한계(실제 OOD AUROC 0.50)를 확인한다. OOD 탐지는 Step 5.5의 커널+CP가 담당.
+목표: 예측 불확실성을 정량화하고, 그 한계를 확인한다. OOD 탐지는 Step 5.5의 커널+CP가 담당.
+
+> 실측: native MC Dropout 95% 포함률 **13.7%** → split conformal **94.7%** (cal 30비행/test 30비행).
+> OOD AUROC(비행별 σ 95분위, 정상 30 vs OOD 50)는 **0.328** — dropout 단독 OOD 탐지는 실패.
 
 핵심 내용:
 - Aleatoric Uncertainty: 센서 노이즈 등 데이터 고유 불확실성 (이 노트북은 **구현하지 않음**)

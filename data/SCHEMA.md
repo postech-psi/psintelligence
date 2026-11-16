@@ -28,7 +28,8 @@ PSIntelligence 파이프라인이 읽고 쓰는 데이터 파일의 컬럼 정�
 | `gru_int8.pth` | 위 모델의 INT8 양자화본 |
 | `mamba_fp32.pth` | 레거시 파일 — Step 6은 GRU를 배포하므로 사용하지 않음 |
 | `rocket_gru.onnx` | ONNX 내보내기 결과 (입력: sequence, h_curr, v_z / 출력: apogee, energy_ratio) |
-| `input_scaler.pkl` | 입력 정규화 스케일러 |
+| `input_scaler.pkl` | 모델 입력 정규화 스케일러 (6 특징, Step 4) |
+| `eda_scaler.pkl` | Step 1.5 EDA용 10특징 스케일러 (모델 입력 아님) |
 | `model_metadata.pkl` | 모델 메타데이터 |
 
 입력 원자료(모터):
@@ -194,7 +195,7 @@ roll :  ṗ = a·cant·q − b·q·p                     a = 1e-2, b = 3e-4
 | D5 | 저장소 전체 | 데이터 스키마 문서 부재 | **본 문서로 해소** |
 | D6 | `step1.5` 노트북 | `diameter=0.15` 를 전달하지만 `create_rocket` 기본값은 0.10 | **해소** — 재현 검증 결과 기준 직경 = **0.15 m** (d=0.15 → 잔차 0.33%, d=0.10 → 6.6%) |
 | D7 | `step1.5` 노트북 | 샘플링 분포가 MD 표 / `EnvironmentSampler.params` / 실제 `np.random.uniform` 호출 3곳에서 서로 다름 | **정정 완료** — MD 표를 실제 U(70,90) 등으로 교체, `config.json` 에 `sampling` 블록 기록 |
-| D8 | `step1.5` → Step 4/5 | `step1.5` 는 스케일러를 `./models/input_scaler.pkl` 에 쓰지만 Step 4/5 는 `./data/simulated/input_scaler.pkl` 를 읽음 (Step 5 는 두 경로를 혼용) | **정정 완료** — 정본 경로 `data/simulated/input_scaler.pkl` 로 통일, Step 5 의 `./models/` 수동 매핑 제거 |
+| D8 | `step1.5` → Step 4/5 | `step1.5` 는 스케일러를 `./models/input_scaler.pkl` 에 쓰지만 Step 4/5 는 `./data/simulated/input_scaler.pkl` 를 읽음 (Step 5 는 두 경로를 혼용) | **정정 완료** — 모델 스케일러는 `data/simulated/input_scaler.pkl`, Step 1.5의 10특징 EDA 스케일러는 `data/simulated/eda_scaler.pkl` 로 분리 |
 | D9 | `step1.5` 노트북 | 재실행 시 정본 파일을 덮어씀 (`_regen` 접미사 없음) | **부분 해결** — `REGENERATE=False` 가드 추가. True 로 바꾸면 여전히 덮어쓰므로 백업 필요 |
 | D10 | 정본 메타데이터 | `wind_direction` 이 샘플링되어 시뮬레이션에 쓰였으나 컬럼으로 기록되지 않음 | **부분 해결** — 기존 200편은 궤적에서 복원 불가(식별 시도 실패). Step 1.5 에 기록 1줄 추가(신규 생성분부터 기록됨) |
 | D11 | `step1.5` 노트북 | 노이즈 σ 가 본문 표(0.5/0.1/0.01)와 코드(1.5/0.2/0.08)에서 불일치 — **데이터는 코드 기준** | **정정 완료** — 본문 표를 코드 값(1.5/0.2/0.08 + bias + 해상도)으로 교체 |
