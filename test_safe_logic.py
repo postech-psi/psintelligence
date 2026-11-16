@@ -3,6 +3,8 @@ SafeLogic L3 단위 테스트 — N-of-M 투표 + 히스테리시스 + 채널 �
 pytest 없이 assert 기반 실행 가능. python test_safe_logic.py
 """
 import sys
+import warnings
+warnings.filterwarnings('ignore', category=RuntimeWarning)  # l1 이론임계 폴백 경고는 테스트에서 기대됨
 sys.path.insert(0, ".")
 
 from safe_logic import SafeLogic, l0_physical_bound, l1_chi2_flag, l2_cp_flag
@@ -122,9 +124,12 @@ def test_l0_helpers():
 
 
 def test_l1_chi2_helper():
-    # 자유도 3, α=0.01 임계 ≈ 11.34
+    # 이론 임계: 자유도 3, α=0.01 임계 ≈ 11.34
     assert l1_chi2_flag(5.0, dof=3, alpha=0.01) is False
     assert l1_chi2_flag(20.0, dof=3, alpha=0.01) is True
+    # 보정 임계 주입 (권장 경로)
+    assert l1_chi2_flag(5.0, dof=3, threshold=10.0) is False
+    assert l1_chi2_flag(20.0, dof=3, threshold=10.0) is True
 
 
 def test_l2_cp_helper():

@@ -23,10 +23,11 @@ PSIntelligence 파이프라인이 읽고 쓰는 데이터 파일의 컬럼 정�
 
 | 파일 | 설명 |
 |:--|:--|
-| `best_gru_model.pth` | Step 4에서 학습된 GRU (`PhysicsInformedWrapper` 로 저장, state_dict 키에 `gru.` 접두사) |
+| `best_gru_model.pth` | Step 4에서 학습된 GRU (검증 손실 최소 시점, `PhysicsInformedWrapper` 로 저장, state_dict 키에 `gru.` 접두사) |
+| `last_gru_model.pth` | Step 4의 마지막 에포크 모델 (best 를 덮어쓰지 않기 위한 별도 파일) |
 | `gru_int8.pth` | 위 모델의 INT8 양자화본 |
-| `mamba_fp32.pth` | Step 6 배포 실습용 |
-| `rocket_gru.onnx`, `rocket_gru.onnx.data` | ONNX 내보내기 결과 |
+| `mamba_fp32.pth` | 레거시 파일 — Step 6은 GRU를 배포하므로 사용하지 않음 |
+| `rocket_gru.onnx` | ONNX 내보내기 결과 (입력: sequence, h_curr, v_z / 출력: apogee, energy_ratio) |
 | `input_scaler.pkl` | 입력 정규화 스케일러 |
 | `model_metadata.pkl` | 모델 메타데이터 |
 
@@ -52,17 +53,28 @@ PSIntelligence 파이프라인이 읽고 쓰는 데이터 파일의 컬럼 정�
 | `velocity_total` | m/s | 속도 크기 |
 | `acceleration_z` | m/s² | 수직 가속도 |
 | `tilt_angle` | 도(추정) | 기체 기울기. 0 = 수직, 음수 = 진행 방향으로 기움 |
-| `gyro_roll`, `gyro_pitch`, `gyro_yaw` | 도/s(추정) | 3축 각속도 |
+| `gyro_roll`, `gyro_pitch`, `gyro_yaw` | **rad/s** | 3축 각속도 (RocketPy `Flight.w3/w1/w2` 규약) |
 | `acceleration_noisy` | m/s² | `acceleration_z` 에 센서 노이즈·해상도 적용 |
 | `altitude_noisy` | m | `altitude` 에 노이즈 적용 (std 1.5 m, 해상도 0.5 m) |
-| `gyro_*_noisy` | 도/s | 자이로 3축 노이즈 적용 |
-| `h_theoretical` | m (해발) | **검증됨:** `altitude + velocity_z² / (2·9.81)` — 현재 상태의 탄도 아포지 추정 |
-| `energy_ratio` | — | **검증됨:** `flight_metadata.apogee_altitude / h_theoretical`. 아포지에서 정확히 1 |
+| `gyro_*_noisy` | rad/s | 자이로 3축 노이즈 적용 |
+| `h_theoretical` | m (해발) | `altitude + velocity_z² / (2·9.81)` — 현재 상태에서 항력이 0 이라고 가정한 탄도 아포지 (해발 절대값) |
+| `energy_ratio` | — | `apogee_altitude / h_theoretical`. **0~1 로 유계가 아니다.** 연소 중에는 추력이 일을 해 r > 1 이 되고(실측 33.2%, 최대 1.631), 관성 구간에서만 r ≤ 1 이다. 자세한 내용은 §2.1 |
 | `time_to_apogee` | s | 아포지까지 남은 시간 |
 | `flight_phase` | 문자열 | `powered_ascent` \| `coasting` (강하는 기록되지 않음) |
 | `flight_id` | — | 0~199 |
 
 **검증:** `h_theoretical` 식은 200편 전체에서 오차 < 1e-3 m (저장 정밀도 한계) 로 일치. `energy_ratio` 도 오차 < 1e-4 로 일치.
+
+### 2.1 `energy_ratio` 의 물리적 의미 — 왜 1을 넘는가
+
+`h_theoretical` 은 **해발 고도를 포함한 절대 탄도 아포지**이고, 발사대에서 `v_z = 0` 이므로 `h_theoretical(0) = 407 m` (발사대 고도) 이다. 따라서 `r = apogee / h_theoretical` 는 "에너지 손실률"이 아니라 **탄도 아포지 대비 실제 아포지 배율**이다.
+
+- 연소 중: 추력이 일을 하므로 에너지가 증가한다. `r > 1` 이 정상이다.
+  실측: 전체 행의 33.2% (22,388 / 67,424) 가 `r > 1`, 최대 1.631 (t=0), t=0 평균 1.384.
+- 연소 종료 후(관성): 항력만 손실이므로 `r ≤ 1` 이고, 0.912~1.000 범위다.
+- 아포지에서 `h_theoretical = apogee` 이므로 `r = 1` 이다.
+
+**따라서 `0 ≤ r ≤ 1` 을 하드 제약으로 강제하거나 `clip(0,1)` 로 라벨을 자르면 연소 구간 라벨이 변조된다.** Step 3는 `r = 1 + 0.7·tanh(·)` (0.3~1.7)로 전체 스냅샷 범위를 덮고, Step 4~6은 윈도 타깃 범위(0.822~1.018)에 맞춰 `r = 1 + 0.2·tanh(·)` (0.8~1.2)를 쓴다. 두 경우 모두 `h_apogee = h + v_z²/2g · r` 로 아포지 하한을 보장한다. 관성 구간만 학습하려면 `flight_phase == 'coasting'` 및 `v_z > 3 m/s` 로 제한하고, 그 구간의 손실률 `(apogee - h)/(v_z²/2g)` 를 별도 라벨로 쓰는 편이 물리적으로 더 깔끔하다.
 
 ## 3. `flight_metadata.csv.gz` — 정본 비행별 파라미터 (200편)
 
@@ -107,7 +119,7 @@ PSIntelligence 파이프라인이 읽고 쓰는 데이터 파일의 컬럼 정�
 | 컬럼 | RocketPy 속성 | 공식 정의 | 재현 모델 / 결과 |
 |:--|:--|:--|:--|
 | `tilt_angle` | `flight.theta(t)` | 3-2-3 너테이션 각 [도] — 수직 기준 기울기 | t=0 에서 정확히 `−(90 − launch_angle)` (corr −1.0000). 동압 의존 2차 모델로 추종, **비행별 평균오차 median 0.92도** (119/200편 1도 이내, 188/200편 2도 이내) |
-| `gyro_pitch` | `flight.w1(t)` | 본체 x축 각속도 = **피치율 q** | dθ/dt 와 상관 +0.86, 범위 ±2.30 = max\|dθ/dt\| 2.302 |
+| `gyro_pitch` | `flight.w1(t)` | 본체 x축 각속도 = **피치율 q** [rad/s] | dθ/dt 와 상관 +0.86. 크기는 q 가 dθ/dt 보다 크다(각속도 ≠ 자세각 변화율). 범위 ±2.30 rad/s |
 | `gyro_yaw` | `flight.w2(t)` | 본체 y축 각속도 = **요율 r** | dθ/dt 와 상관 −0.75 (오일러 결합) |
 | `gyro_roll` | `flight.w3(t)` | 본체 z축(대칭축) 각속도 = **롤율 p** | 롤 감쇠 ODE 로 **비행별 상관 median +0.934** (111/200편이 개별 0.9 이상) |
 
@@ -181,17 +193,18 @@ roll :  ṗ = a·cant·q − b·q·p                     a = 1e-2, b = 3e-4
 | D4 | 정본 세트 | `mass_dry` 컬럼 자체가 없어 추진제 질량을 재계산해야 함 | 〃 (문서화로 대응) |
 | D5 | 저장소 전체 | 데이터 스키마 문서 부재 | **본 문서로 해소** |
 | D6 | `step1.5` 노트북 | `diameter=0.15` 를 전달하지만 `create_rocket` 기본값은 0.10 | **해소** — 재현 검증 결과 기준 직경 = **0.15 m** (d=0.15 → 잔차 0.33%, d=0.10 → 6.6%) |
-| D7 | `step1.5` 노트북 | 샘플링 분포가 MD 표 / `EnvironmentSampler.params` / 실제 `np.random.uniform` 호출 3곳에서 서로 다름 | 미해결 |
-| D8 | `step1.5` → Step 4/5 | `step1.5` 는 스케일러를 `./models/input_scaler.pkl` 에 쓰지만 Step 4/5 는 `./data/simulated/input_scaler.pkl` 를 읽음 (Step 5 는 두 경로를 혼용) | 미해결 |
-| D9 | `step1.5` 노트북 | 재실행 시 정본 파일을 덮어씀 (`_regen` 접미사 없음) | 문서화로 대응 |
+| D7 | `step1.5` 노트북 | 샘플링 분포가 MD 표 / `EnvironmentSampler.params` / 실제 `np.random.uniform` 호출 3곳에서 서로 다름 | **정정 완료** — MD 표를 실제 U(70,90) 등으로 교체, `config.json` 에 `sampling` 블록 기록 |
+| D8 | `step1.5` → Step 4/5 | `step1.5` 는 스케일러를 `./models/input_scaler.pkl` 에 쓰지만 Step 4/5 는 `./data/simulated/input_scaler.pkl` 를 읽음 (Step 5 는 두 경로를 혼용) | **정정 완료** — 정본 경로 `data/simulated/input_scaler.pkl` 로 통일, Step 5 의 `./models/` 수동 매핑 제거 |
+| D9 | `step1.5` 노트북 | 재실행 시 정본 파일을 덮어씀 (`_regen` 접미사 없음) | **부분 해결** — `REGENERATE=False` 가드 추가. True 로 바꾸면 여전히 덮어쓰므로 백업 필요 |
 | D10 | 정본 메타데이터 | `wind_direction` 이 샘플링되어 시뮬레이션에 쓰였으나 컬럼으로 기록되지 않음 | **부분 해결** — 기존 200편은 궤적에서 복원 불가(식별 시도 실패). Step 1.5 에 기록 1줄 추가(신규 생성분부터 기록됨) |
-| D11 | `step1.5` 노트북 | 노이즈 σ 가 본문 표(0.5/0.1/0.01)와 코드(1.5/0.2/0.08)에서 불일치 — **데이터는 코드 기준** | 문서화로 대응 (§3.3) |
+| D11 | `step1.5` 노트북 | 노이즈 σ 가 본문 표(0.5/0.1/0.01)와 코드(1.5/0.2/0.08)에서 불일치 — **데이터는 코드 기준** | **정정 완료** — 본문 표를 코드 값(1.5/0.2/0.08 + bias + 해상도)으로 교체 |
 | D12 | `step1.5` 노트북 | 천음속 이상현상 분기(`0.85 < Mach < 1.15`)가 도달 불가 — 데이터의 최대 Mach 는 0.228 | 문서화로 대응 |
 | D13 | `step2` 노트북 셀 2 | `a_meas_raw[0]` 를 참조하나 정의되지 않음(`a_raw` 가 정의) → **NameError 로 전 셀 실행 불가**. 저장된 출력은 이전 버전 기준이라 스테일 | **정정 완료** — `a_raw[0]` 로 수정, 재실행으로 출력 갱신 |
 | D14 | `step2` 노트북 셀 11 | 필터에 `u = acceleration_noisy`(raw, a+g)를 넣어 중력 보상 누락. 같은 노트북 셀 7 은 `-9.81` 을 빼므로 두 경로가 불일치 | **정정 완료** — 실측 확인: 보상 시 혁신 평균 −0.0007 m, 미보상 시 −0.31 m |
 | D15 | `step2` 노트북 셀 11 | `boxplot(..., labels=)` 는 matplotlib ≥3.9 에서 제거(`tick_labels=`) → `TypeError` | **정정 완료** — `set_xticklabels` 로 교체(전 버전 호환) |
 | D16 | `step2` 노트북 셀 1 | 한글 폰트를 `'Malgun Gothic'`(Windows 전용)으로 하드코딩 → Linux 에서 그래프 한글이 □ 로 표시 | **정정 완료** — OS별 자동 선택(step1.5 와 동일 관례) |
-| D17 | `step2` 노트북 | EKF 와 UKF 의 혁신이 최대차 1.4e-11(상관 1.0000000000)로 **수학적으로 동일**. 구현된 필터는 상태에 대해 선형(비선형성은 측정된 입력 u 에만 존재)이라 EKF 야코비안이 정확 → UKF 가 개선할 여지가 없음. 본문의 "강력한 비선형" 서술과 구현이 불일치 | 문서화로 대응 |
+| D17 | `step2` 노트북 | EKF 와 UKF 의 혁신이 최대차 1.4e-11(상관 1.0000000000)로 **수학적으로 동일**. 구현된 필터는 상태에 대해 선형(비선형성은 측정된 입력 u 에만 존재)이라 EKF 야코비안이 정확 → UKF 가 개선할 여지가 없음. 본문의 "강력한 비선형" 서술과 구현이 불일치 | **정정 완료** — §1.1 에 구현이 기구학 추적기임을 명시, 판정에 1e-9 허용오차 추가, Joseph form 구현 |
+| D18 | Step 3/4/5 실제 비행 파서 | 실제 로그 `Gyro` 는 deg/s, 시뮬 `gyro_*` 는 rad/s. 변환 없이 특징에 넣으면 57.3배 스케일 오류 | **정정 완료** — 파서에서 `np.deg2rad`, 문서 단위 rad/s 로 통일 |
 
 ### 5.1 OOD 세트 (Step 5.5 용) — `data/simulated/ood/`
 

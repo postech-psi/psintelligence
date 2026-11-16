@@ -4,7 +4,7 @@ PSIntelligence Step 5.5 (2026-08-18 결정 D-A)
 
 3-Layer FDIR:
   L0: 물리 경계 (하드 바운드)   -> 단발 플래그로 즉시 abort (결정적)
-  L1: 필터 일관성 (혁신 χ²)     -> 단발 플래그로 즉시 abort (결정적, exact)
+  L1: 필터 일관성 (혁신 χ²)     -> 단발 플래그로 즉시 abort (결정적; 이론 exact는 백색성 전제)
   L2: ML anomaly (OC-SVM + CP)  -> N-of-M 투표 (기본 N=3, M=5)
 
 히스테리시스: abort 래치 후 해제는 M hysteresis_clear(=5) 연속 전 채널 정상 필요.
@@ -142,14 +142,26 @@ def l0_physical_bound(sensor_value: float, min_bound: float, max_bound: float) -
     return not (min_bound <= sensor_value <= max_bound)
 
 
-def l1_chi2_flag(chi2_stat: float, dof: int, alpha: float = 0.01) -> bool:
-    """L1: 혁신 χ² 검정 — 결정적 exact 보장.
+def l1_chi2_flag(chi2_stat: float, dof: int, alpha: float = 0.01,
+                 *, threshold: float | None = None) -> bool:
+    """L1: 혁신 χ² 검정.
 
     H0: 혁신이 영평균 백색 가우시안 -> χ²(dof) 분포.
     임계 초과 시 필터 일관성 위반으로 abort.
+
+    ⚠️ 이론 임계(chi2.ppf)는 잔차가 백색일 때만 유효하다. 실제 데이터는
+    자기상관으로 FPR 이 이론값을 크게 초과할 수 있으므로(Step 5.5 실측 34%),
+    **calibration 창에서 구한 threshold 를 주입하는 것을 권장**한다.
+    threshold=None 이면 이론 임계로 폴백하며 경고를 낸다.
     """
-    from scipy.stats import chi2
-    threshold = chi2.ppf(1 - alpha, df=dof)
+    import warnings
+    if threshold is None:
+        from scipy.stats import chi2
+        threshold = float(chi2.ppf(1 - alpha, df=dof))
+        warnings.warn(
+            "l1_chi2_flag: 이론 χ² 임계를 사용합니다. 잔차 백색성이 깨지면 "
+            "FPR 이 보장되지 않습니다. threshold=... 로 보정 임계를 주입하세요.",
+            RuntimeWarning, stacklevel=2)
     return bool(chi2_stat > threshold)
 
 

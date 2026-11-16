@@ -12,8 +12,8 @@
 | 물리 법칙 준수 | AI 예측이 에너지 보존, 운동 방정식 등 물리 법칙을 위반하지 않도록 제약 | Step 3 (PINN) |
 | 시계열 맥락 학습 | 과거 비행 이력 (자이로 요동, 틸트 등) 을 기반으로 미래 예측 | Step 4 (GRU) |
 | 불확실성 정량화 | AI 가 "자신의 무지"를 인식하고, 위험 상황에서 안전모드 진입 | Step 5 (UQ) |
-| 온보드 배포 | 제한된 메모리/전력의 비행 컴퓨터에서 실시간 추론 가능 | Step 6 (Mamba+ONNX) |
-| 안전성 우선 | 정확도보다 신뢰구간과 Fail-safe 로직을 우선시하는 엔지니어링 접근 | Step 5-6 |
+| 온보드 배포 | 제한된 메모리/전력의 비행 컴퓨터에서 실시간 추론 가능 | Step 6 (Quantization+ONNX) |
+| 안전성 우선 | 정확도보다 예측구간과 Fail-safe 로직을 우선시하는 엔지니어링 접근 | Step 5-6 |
 
 ---
 
@@ -27,7 +27,7 @@ Step 1 → Step 2 → Step 3 → Step 4 → Step 5 → Step 5.5 → Step 6
   │         │         │         │         └─ 불확실성 정량화 (MC Dropout)
   │         │         │         └─ 시계열 모델링 (GRU)
   │         │         └─ 물리 법칙 통합 (PINN)
-  │         └─ 비선형 필터 (EKF/UKF)
+  │         └─ 상태 추정 (EKF/UKF)
   └─ 선형 필터 (Kalman)
 ```
 
@@ -62,6 +62,8 @@ Step 1 → Step 2 → Step 3 → Step 4 → Step 5 → Step 5.5 → Step 6
 - 센서 노이즈 모델링 (고도·가속도·자이로), 해상도 양자화
 - 물리 기반 라벨 생성 (`h_theoretical`, `energy_ratio`)
 
+> `energy_ratio = apogee / (h + v²/2g)` 는 **0~1 로 유계가 아니다.** 연소 중에는 추력이 일을 해 1을 넘는다(실측 33.2%, 최대 1.631). 자세한 정의와 올바른 사용법은 `data/SCHEMA.md §2.1` 참조.
+
 필요 환경: 기본 `requirements.txt` 로 충분합니다. `data/simulated/` 가 동봉되어 있어
 RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재생성할 때만 RocketPy 필요).
 
@@ -70,14 +72,19 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 ---
 
 
-### [Step 2] EKF & UKF: 비선형 시스템 확장
+### [Step 2] EKF & UKF: 상태 추정의 두 구현
 
-목표: 비선형 로켓 역학 (추력, 항력, 중력) 을 고려한 상태 추정
+목표: 측정 가속도를 적분하는 기구학 추적기에서 EKF/UKF 구현을 비교
 
 핵심 내용:
-- EKF: 자코비안 행렬 수동 유도
-- UKF: Unscented Transform 로 비선형성 근사
+- EKF: 상태 전이 야코비안과 Joseph form 공분산 갱신
+- UKF: Unscented Transform 으로 평균/공분산 전파
+- **교육 포인트:** 상태 전이와 측정이 상태에 대해 선형이므로 두 필터는 수치적으로 동일하다.
+  UKF 의 UT 가 항등 변환이 되는 이유를 설명한다.
 - Bella Lui 실제 비행 데이터 검증
+
+> 교재의 비선형 로켓 동역학(추력·항력·중력)은 §1.1 에 서술되어 있지만, 이 노트북의
+> 구현은 그 모델을 쓰지 않는다. 실제 비선형 f 구현은 Step 5.5 의 명목 물리모델 필터가 담당한다.
 
 ---
 
@@ -87,8 +94,9 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 
 핵심 내용:
 - Hard Constraint: 출력층에 물리 식 내장 (아포지 = 현재고도 + v²/2g × r)
-- Soft Constraint: Loss 함수에 물리 항 추가 (단조 감소, 에너지 보존)
+- Soft Constraint: Loss 함수에 물리 항 추가 (범위 0.8~1.7, 관성 구간 r 비감소)
 - Stability Masking: 아포지 근처 (v→0) 수치 불안정성 제거
+- `energy_ratio` 는 0~1 로 유계가 아니다. 연소 중 r>1 은 추력 일 때문이며, `clip` 하지 않는다 (SCHEMA §2.1).
 
 논문 기반:
 - Raissi et al. (2019). *Physics-Informed Neural Networks*. Journal of Computational Physics.
@@ -100,9 +108,10 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 목표: 발사 직후의 핀 틀어짐, 자이로 요동 등 과거 이력이 현재 아포지에 미치는 영향 학습
 
 핵심 내용:
-- Sliding Window: (Batch, Seq_Len, Features) 3D 텐서 전처리
+- Sliding Window: (Batch, Seq_Len, Features) 3D 텐서 전처리 (window=100, stride=10)
 - Hidden State: 과거 100 스텝 (2 초) 비행 이력 압축 저장
-- Physics Wrapper: Step 3 의 Hard Constraint 구조 재활용
+- Physics Wrapper: `h_apogee = h + v²/2g·r` 를 **학습 손실에도 포함** (r 손실 + 아포지 손실)
+- 스케일러는 train 비행에만 fit (누수 방지)
 
 논문 기반:
 - Chung et al. (2014). *Empirical Evaluation of Gated Recurrent Neural Networks*. arXiv:1412.3555.
@@ -112,13 +121,14 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 
 ### [Step 5] Uncertainty Quantification: AI 의 자신감 측정
 
-목표: AI 가 "모르는 상황 (OOD)"을 감지하고 안전모드로 진입
+목표: 예측 불확실성을 정량화하고, 그 한계(실제 OOD AUROC 0.50)를 확인한다. OOD 탐지는 Step 5.5의 커널+CP가 담당.
 
 핵심 내용:
-- Aleatoric Uncertainty: 센서 노이즈 등 데이터 고유 불확실성 (줄일 수 없음)
+- Aleatoric Uncertainty: 센서 노이즈 등 데이터 고유 불확실성 (이 노트북은 **구현하지 않음**)
 - Epistemic Uncertainty: 모델 무지 (데이터 추가 시 감소, OOD 감지용)
 - MC Dropout: 추론 시 Dropout 켜고 T 번 샘플링하여 분산 계산
-- 신뢰구간 기반 사출 로직: `현재고도 ≥ 예측아포지 - 2σ` 일 때만 사출 승인
+- 95% **예측구간** (`mean ± 1.96σ`) 기반 사출 로직:
+  `σ < 2 m` **그리고** `mean - 1.96σ ≤ 현재고도` 일 때만 사출 승인
 
 논문 기반:
 - Gal & Ghahramani (2016). *Dropout as a Bayesian Approximation*. ICML.
@@ -143,12 +153,16 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 
 | 방법 | FPR(비행) | TPR(비행) |
 |:--|:--:|:--:|
-| L1 χ² (보정임계 + N-of-M) | 6.0% | 68.0% |
-| OC-SVM + CP | 6.0% | 54.0% |
-| KDE + CP | 6.0% | 60.0% |
-| kPCA + CP | 4.0% | 54.0% |
+| L1 χ² (N-of-M, 비행단위 보정) | 14.0% (cal 10%) | 64.0% |
+| OC-SVM + CP | 8.0% | 56.0% |
+| KDE + CP | 6.0% | 52.0% |
+| kPCA + CP | 4.0% | 52.0% |
 
-계열별로는 질량 93 - 100% · 항력 67 - 100% · 저각 11 - 56% · 강풍 0 - 9% 로 탐지가 계열 선택적
+> L1 은 calibration 50편에서 FPR 10% 로 맞췄지만 test 50편에서 14% 로 튄다.
+> 50비행 분위수 추정의 한계이며, N-of-M 규칙 전체를 CP 로 calibration 하는 것이 남은 과제다.
+> 창 단위 CP + N-of-M 은 비행 FPR 이 36% 이므로, 비행 단위 보장이 필요하면 OC-SVM+CP(8%)를 쓴다.
+
+계열별로는 질량 93 - 100% · 항력 67 - 100% · 저각 11 - 56% · 강풍 0 - 18% 로 탐지가 계열 선택적
 
 입력 생성:
 ```bash
@@ -168,17 +182,20 @@ python scripts/model_filter.py      # 명목 물리모델 잔차 → residuals.n
 
 ---
 
-### [Step 6] Quantize & Edge Deployment: 비행 컴퓨터를 위한 AI 경량화
+### [Step 6] Quantization & Edge Deployment: 비행 컴퓨터를 위한 AI 경량화
 
-목표: 제한된 온보드 자원 에서 실시간 추론
+> 이 단계는 **GRU 배포** 실습이다. Mamba 는 이론 배경으로만 소개하며, 실제 모델은 Step 4의 GRU다.
+
+목표: 제한된 온보드 자원에서 실시간 추론
 
 핵심 내용:
-- Quantization: FP32 → INT8 양자화 (모델 크기 75% 감소)
-- ONNX Export: PyTorch → C++ 배포용 포맷 변환
-- 속도 벤치마크: 추론 시간 < 20ms (50Hz 요구사항 충족)
+- Quantization: FP32 → INT8 동적 양자화 (모델 크기 약 1/4)
+- ONNX Export: `apogee` 와 `energy_ratio` 를 **함께** 출력해 C++ 물리 후처리 제거
+- 수치 동등성: 같은 입력에서 PyTorch↔ONNX 최대 차이 출력
+- 속도 벤치마크: 이 PC CPU 기준. 온보드 MCU 지연은 별도 측정 필요
 
 산출물:
-- `rocket_apogee_model.onnx`: 온보드 배포용 모델
+- `rocket_gru.onnx`: 온보드 배포용 모델 (아포지 + r 두 출력)
 
 ---
 
@@ -278,6 +295,16 @@ python scripts/verify_dataset.py --data-dir <경로>  # 생성 데이터 검사
 
 > 스키마·알려진 결함·재현 모델: [`data/SCHEMA.md`](data/SCHEMA.md)
 
+### 단일 비행 추론 데모
+
+학습된 GRU로 실제 로그 한 편의 아포지를 예측하려면:
+
+```bash
+python main.py --csv data/112.txt
+```
+
+출력: 마지막 윈도의 예측 아포지, 예측 r, constant-r(r=1) 기준선.
+
 
 ---
 
@@ -285,7 +312,7 @@ python scripts/verify_dataset.py --data-dir <경로>  # 생성 데이터 검사
 
 본 프로젝트는 단순한 코드 구현을 넘어 다음과 같은 엔지니어링 사고방식을 함양합니다:
 
-1. 점진적 복잡도: 선형 (Step 1) → 비선형 (Step 2) → AI (Step 3-6) 로 단계적 학습
+1. 점진적 복잡도: 선형 칼만 (Step 1) → 기구학 EKF/UKF (Step 2) → AI (Step 3-6)
 2. 물리 기반 AI: 데이터만 믿지 않고 물리 법칙을 제약 조건으로 활용
 3. 안전성 우선: 정확도보다 불확실성 인식과 Fail-safe 로직을 우선시
 4. 배포 고려: 연구실 PC 가 아닌 온보드 컴퓨터 제약을 고려한 모델 설계
@@ -310,8 +337,8 @@ python scripts/verify_dataset.py --data-dir <경로>  # 생성 데이터 검사
 
 ## 주의사항
 
-1. Step 순서 준수: 각 Step 은 이전 Step 의 산출물을 사용하므로 순차적 실행 필요
-2. 데이터 생성: Step 1.5 시뮬레이션 데이터 생성이 선행되어야 함
+1. Step 순서 준수: 각 Step 은 이전 Step 의 산출물을 사용하므로 순차적 실행 권장
+2. 데이터: `data/simulated/` 동봉 데이터로 Step 2~6 실행 가능. Step 1.5 재생성은 선택
 3. GPU 권장: Step 4-6 은 GPU 가 있으면 학습 속도가 5-10 배 빠름
 4. 메모리 관리: Step 6 ONNX Export 시 모델 크기가 급증할 수 있으므로 주의
 

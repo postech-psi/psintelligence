@@ -7,7 +7,7 @@
 # 저장소에 동봉된 data/simulated/ 를 그대로 쓰므로 RocketPy 가 필요 없습니다.
 
 # ---- 필수 (Step 2~6) ----
-numpy>=1.24
+numpy>=2.0
 pandas>=2.0
 scipy>=1.10          # Step 2  EKF / UKF
 matplotlib>=3.7
