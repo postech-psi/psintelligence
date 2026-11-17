@@ -59,7 +59,7 @@ PSIntelligence 파이프라인이 읽고 쓰는 데이터 파일의 컬럼 정�
 | `altitude_noisy` | m | `altitude` 에 노이즈 적용 (std 1.5 m, 해상도 0.5 m) |
 | `gyro_*_noisy` | rad/s | 자이로 3축 노이즈 적용 |
 | `h_theoretical` | m (해발) | `altitude + velocity_z² / (2·9.81)` — 현재 상태에서 항력이 0 이라고 가정한 탄도 아포지 (해발 절대값) |
-| `energy_ratio` | — | `apogee_altitude / h_theoretical`인 원본 ASL 라벨. **전체 비행에서 0~1 로 유계가 아니다.** 연소 중 r > 1을 허용한다. 수직 소산 coasting의 조건부 상한과 실제 데이터의 작은 초과는 §2.1에서 구분한다. |
+| `energy_ratio` | — | `apogee_altitude / h_theoretical`. **0~1 로 유계가 아니다.** 연소 중에는 추력이 일을 해 r > 1 이 되고(실측 33.2%, 최대 1.631), 관성 구간에서만 r ≤ 1 이다. 자세한 내용은 §2.1 |
 | `time_to_apogee` | s | 아포지까지 남은 시간 |
 | `flight_phase` | 문자열 | `powered_ascent` \| `coasting` (강하는 기록되지 않음) |
 | `flight_id` | — | 0~199 |
@@ -72,22 +72,10 @@ PSIntelligence 파이프라인이 읽고 쓰는 데이터 파일의 컬럼 정�
 
 - 연소 중: 추력이 일을 하므로 에너지가 증가한다. `r > 1` 이 정상이다.
   실측: 전체 행의 33.2% (22,388 / 67,424) 가 `r > 1`, 최대 1.631 (t=0), t=0 평균 1.384.
-- 연소 종료 후: 질량·g가 일정하고 수직 비중력 일이 비양수인 상승 모델에서는 `r ≤ 1`이다. 이는 전체 3D coasting에 대한 무조건적 명제가 아니다. 원본 ASL 라벨의 실제 coasting 범위는 약 `0.912765~1.000040`이며 작은 상한 초과를 1로 자르지 않는다. 이 차이의 원인을 반올림·수치 오차·힘 모델 중 하나로 확인 없이 단정하지 않는다.
-- 아포지의 동일 상태·동일 g 정의에서는 수직 속도가 0이므로 `r = 1`이다. 저장 grid에 실제 아포지 시각이 정확히 포함됐는지는 별도로 구분한다.
+- 연소 종료 후(관성): 항력만 손실이므로 `r ≤ 1` 이고, 0.912~1.000 범위다.
+- 아포지에서 `h_theoretical = apogee` 이므로 `r = 1` 이다.
 
-**원본 전체 비행 라벨을 `clip(0,1)` 하면 연소 구간 라벨이 변조된다.** 원본 CSV는 변경하지 않는다. 라벨 `r = H/(h+G)`의 역변환은 `H = (h+G)·r`이며 `h + G·r`와 다르다.
-
-### 2.2 Step 3의 coasting 전용 파생 계약
-
-- 원래 r 정의는 유지한다. 다만 Step 3에서는 h와 metadata의 H를 같은 발사대 기준 AGL로 이동해 파생 라벨을 다시 계산한다. 원본 ASL `energy_ratio`와 수치가 다를 수 있으며 그 컬럼을 덮어쓰지 않는다.
-- 학습 후보는 `flight_phase == 'coasting'`, `v_z > 3 m/s`인 유효 관측이다. h는 음수가 아니고 `D=h+v_z²/(2g)>0`이어야 한다.
-- 수직 소산 가정의 허용 범위는 `h/D ≤ r ≤ 1`, 동등하게 `h ≤ H_pred ≤ h+G`다. 출력은 `r=h/D+(1-h/D)·sigmoid(logit)`으로 구성하며 사후 max clamp를 사용하지 않는다.
-- raw 정답이 이 범위를 벗어나는 행을 train/validation에서는 제외하고 이유·개수를 기록한다. 정답 라벨을 clip하지 않는다. 시험의 주 점수는 제외 전 모든 유효 상승 coasting test 행에서 계산하고, 물리 일관 subset 점수는 별도로 공개한다.
-- 상한 초과는 데이터와 단순화한 가정의 차이를 보여주는 audit 항목이지 무조건적인 정상 현상 또는 물리 위반 확정 판정이 아니다. 제약 모델의 전체 3D·실기 적합성은 별도 검증이다.
-- 입력 가속도는 `acceleration_inertial=acceleration_noisy-9.81`인 파생 필드다. 실기는 이미 중력 제거된 로그 값을 단위 변환만 한다. 원본 specific-force 컬럼은 Step 2를 위해 보존한다.
-- 범위/coast 벌점 및 시간좌표 편미분 단조성 벌점은 새 head의 손실에서 제거한다. 현재 실습은 감독학습과 hard-constrained head이며 PDE residual solver가 아니다.
-- 새로운 학습·실기 추론은 아직 재실행하지 않았으므로 예전 Step 3의 저장 성능을 새 모델 성과로 인용하지 않는다. 실제 burnout 시각 미확인 또는 독립 아포지 정답 부재를 명시한다.
-- Step 4~6 GRU는 별도의 AGL raw 모델로 유지한다. 이 변경이 GRU의 출력 범위·scaler·checkpoint·UQ·ONNX를 바꾸지 않는다. α=(H-h)/G로 라벨을 재정의한 것도 아니다.
+**따라서 `0 ≤ r ≤ 1` 을 하드 제약으로 강제하거나 `clip(0,1)` 로 라벨을 자르면 연소 구간 라벨이 변조된다.** Step 3는 `r = 1 + 0.7·tanh(·)` (0.3~1.7)로 전체 스냅샷 범위를 덮고, Step 4~6은 윈도 타깃 범위(0.822~1.018)에 맞춰 `r = 1 + 0.2·tanh(·)` (0.8~1.2)를 쓴다. **저장 라벨의 정의가 `r = H/(h+G)` 이므로 역변환은 `H = (h+G)·r` 이다.** `h + G·r` 로 복원하면 `h(1-r)` 만큼 체계적으로 틀린다. 모델은 `r ≥ h/(h+G)` 를 강제해 `H ≥ h` 하한을 보장한다. 관성 구간만 학습하려면 `flight_phase == 'coasting'` 및 `v_z > 3 m/s` 로 제한하고, 그 구간의 **잔여 상승고도 비율** `(H-h)/G` (소산이 없으면 1) 또는 **손실률** `1-(H-h)/G` 를 별도 라벨로 쓰는 편이 물리적으로 더 깔끔하다. G가 작은 구간에서는 이 정의가 불안정하므로 별도 처리가 필요하다.
 
 ## 3. `flight_metadata.csv.gz` — 정본 비행별 파라미터 (200편)
 
@@ -218,7 +206,7 @@ roll :  ṗ = a·cant·q − b·q·p                     a = 1e-2, b = 3e-4
 | D16 | `step2` 노트북 셀 1 | 한글 폰트를 `'Malgun Gothic'`(Windows 전용)으로 하드코딩 → Linux 에서 그래프 한글이 □ 로 표시 | **정정 완료** — OS별 자동 선택(step1.5 와 동일 관례) |
 | D17 | `step2` 노트북 | EKF 와 UKF 의 혁신이 최대차 1.4e-11(상관 1.0000000000)로 **수학적으로 동일**. 구현된 필터는 상태에 대해 선형(비선형성은 측정된 입력 u 에만 존재)이라 EKF 야코비안이 정확 → UKF 가 개선할 여지가 없음. 본문의 "강력한 비선형" 서술과 구현이 불일치 | **정정 완료** — §1.1 에 구현이 기구학 추적기임을 명시, 판정에 1e-9 허용오차 추가, Joseph form 구현 |
 | D18 | Step 3/4/5 실제 비행 파서 | 실제 로그 `Gyro` 는 deg/s, 시뮬 `gyro_*` 는 rad/s. 변환 없이 특징에 넣으면 57.3배 스케일 오류 | **정정 완료** — 파서에서 `np.deg2rad`, 문서 단위 rad/s 로 통일 |
-| D19 | Step 4/5/6 GRU | 시뮬 `altitude` 는 해발 고도로 발사대 407 m 고정, 실기 로그는 1.007~186.464 m. 절대고도를 그대로 특징·라벨·physics head에 쓰면 학습 범위 밖이며 `r` 상한 1.2로도 필요한 값을 표현 못 함 | **부분 정정** — Step 4/5/6을 발사대 상대고도(AGL)로 통일하고 `r=1+0.5·tanh`로 확장. sim test MAE 0.99 m, 실기 112 최종 raw 3.97 m(clamp 12.3%)이지만 t≈3 s raw 오차 −30.5 m와 단일 실기 로그 한계는 남음. Step 3는 §2.2의 별도 coasting 전용 파생 계약으로 분리 |
+| D19 | Step 4/5/6 GRU | 시뮬 `altitude` 는 해발 고도로 발사대 407 m 고정, 실기 로그는 1.007~186.464 m. 절대고도를 그대로 특징·라벨·physics head에 쓰면 학습 범위 밖이며 `r` 상한 1.2로도 필요한 값을 표현 못 함 | **부분 정정** — Step 4/5/6을 발사대 상대고도(AGL)로 통일하고 `r=1+0.5·tanh`로 확장. sim test MAE 0.99 m, 실기 112 최종 raw 3.97 m(clamp 12.3%)이지만 t≈3 s raw 오차 −30.5 m와 단일 실기 로그 한계는 남음. Step 3 PINN은 별도 후속 |
 | D20 | feature/accelerometer 계약 | sim `acceleration_noisy`는 specific force(g 포함), 실기 `Accel_z`는 중력 제거 가속도. 같은 이름으로 섞으면 9.81 m/s² 편향 | **정정 완료** — 공통 `acceleration_inertial` 파생 필드와 scaler mean 이동 동치성. 원본 컬럼 보존. body 축 일치는 미확인 |
 | D21 | 학습/평가/배포 경로 | Step 4는 마지막 epoch 모델을 평가하면서 best checkpoint를 저장했고, clamp가 raw gradient와 아포지 오차를 가림. Step 5/6/CLI도 같은 계약을 쓰지 않음 | **부분 정정** — best state 복원, raw validation, projection 분리, 공통 endpoint/split manifest, 공통 raw benchmark 추가. torch 실행 제한으로 실제 benchmark·재학습은 미검증 |
 

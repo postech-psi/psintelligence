@@ -9,7 +9,7 @@
 
 | 테마 | 설명 | 적용 단계 |
 |------|------|----------|
-| 물리 기반 제약 | 상승 coasting의 허용 범위를 출력 head에 반영 (전체 물리 법칙 보장 아님) | Step 3 (PINN-style) |
+| 물리 기반 제약 | 탄도식 출력 head와 soft prior로 예측을 제한 (전체 물리 법칙 보장 아님) | Step 3 (PINN-style) |
 | 시계열 맥락 학습 | 과거 비행 이력 (자이로 요동, 틸트 등) 을 기반으로 미래 예측 | Step 4 (GRU) |
 | 불확실성 정량화 | AI 가 "자신의 무지"를 인식하고, 위험 상황에서 안전모드 진입 | Step 5 (UQ) |
 | 온보드 배포 | 제한된 메모리/전력의 비행 컴퓨터에서 실시간 추론 가능 | Step 6 (Quantization+ONNX) |
@@ -88,34 +88,24 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 
 ---
 
-### [Step 3] Coasting-only physics-informed regression
+### [Step 3] Physics-informed regression: 물리 기반 제약을 쓰는 아포지 예측
 
-목표: 연소 종료 후 상승하는 구간에서 현재 r의 정의 `r=H/(h+G)`를 유지하면서,
-수직 소산 모델의 허용 범위를 출력 구조에 반영한다. 원 논문의 PDE 해 복원이나 계수 식별을
-구현한 것은 아니며, 감독학습에 hard-constrained head를 결합하는 실습이다.
+목표: 탄도 기준식을 출력 구조에 활용하고, 정성적 물리 prior를 학습에 추가한다. 원 논문의 PDE 해 복원이나 계수 식별을 직접 구현한 것은 아니다.
+
+> ⚠️ Step 3는 기존 ASL 라벨과 시간 포함 7특징을 쓰는 **legacy 참고 구현**이다.
+> v2 GRU의 AGL·관성가속도·공통 endpoint 결과와 직접 비교해 아키텍처 우열을 주장하지 않는다.
 
 핵심 내용:
-- 운용 범위: `flight_phase == 'coasting'`, `v_z > 3 m/s`. 연소 구간에는 이 모델을 적용하지 않는다.
-- 가정: 질량·g가 일정하고, 무추력 상승 중 수직 비중력 일이 비양수인 수직 등가 모델.
-  coasting이라는 phase 이름만으로 모든 3D 비행에 이 가정이 성립한다고 주장하지 않는다.
-- 좌표·입력: h와 정답 H를 함께 AGL로 바꾸고 관성가속도 파생 필드를 사용한다.
-  원본 ASL `energy_ratio`와 specific-force 컬럼은 그대로 보존한다.
-- `G=v_z²/(2g)`, `D=h+G`, `r_floor=h/D`에 대해
-  `r=r_floor+(1-r_floor)·sigmoid(logit)`, `H_pred=D·r`로 구성한다.
-  따라서 유효 입력에서 `r_floor≤r≤1`, `h≤H_pred≤h+G`를 직접 만족하며 사후 max clamp는 없다.
-- 상한·하한 만족은 이 출력 구조의 보장이지, 예측 정확도·전체 역학에너지·실기 안전 보장이 아니다.
-- 라벨이 허용 범위를 벗어난 행을 clip하지 않는다. train/validation에서는 제외 수와 사유를 공개하고,
-  시험의 주 지표는 제외 전의 모든 유효 상승 coasting test 행으로 계산한다.
-  물리 일관 subset 점수는 별도로 보고해 정답 기반 선별의 영향을 숨기지 않는다.
-- 비행 단위 train/validation/calibration/test는 120/30/25/25이며 scaler는 train으로만 fit한다.
-- 기존의 범위/coast 벌점과 시간좌표 편미분 단조성 벌점을 제거했다. 새 head에서 항상 0인
-  penalty를 학습 효과로 설명하지 않는다. ANN 비교와 물리/현재고도 기준선을 구분한다.
-- `coasting_apogee.py`와 `test_coasting_apogee.py`가 비-torch 데이터·범위·역변환 계약을 담당한다.
+- 물리 기반 출력: `G=v_z²/(2g)`, `H_pred=(h+G)·r_eff`. r은 저장 라벨 `H/(h+G)`에 대응하는 보정 배율이다.
+- Hard Constraint: bounded raw output과 하한 projection으로 유효 입력 영역에서 `H_pred≥h`를 구조적으로 강제한다. 이는 전체 운동방정식·에너지 보존·정확도·안전성의 보장이 아니다.
+- Soft Constraint: 범위 벌점, 관성 구간 `r>1` 벌점, 다른 특징을 고정한 시간 좌표 편미분의 음수 벌점을 적용한다. 정확한 만족이나 실제 궤적 단조성은 보장하지 않는다.
+- Stability Masking: 저속 구간에서 보조 penalty의 적용을 제한한다. 현재 r 정의에서 `v_z→0`이 분모 특이점은 아니다.
+- `energy_ratio` 는 0~1 로 유계가 아니다. 연소 중 r>1 은 추력 일 때문이며, `clip` 하지 않는다 (SCHEMA §2.1).
 
-> **검증 범위:** notebook의 기존 저장 출력은 비웠다. 이번 변경에서 torch 학습·추론은 실행하지 않았으므로
-> 새 모델의 성능은 미검증이다. 실제 burnout 시각이 확인되지 않으면 실기 coast-only 추론은 보류하며,
-> 로그가 아포지 전에 끊긴 `112.txt`의 최대값으로 정확도를 계산하지 않는다.
-> Step 4의 GRU와 모델·스케일러·ONNX 산출물은 별도로 유지한다.
+> 실측(단일 seed, clamp 분리): 저속 raw RMSE Baseline **0.001916**, PINN coast off **0.140730**,
+> coast on **0.020638**. clamp 후 두 PINN은 **0.000359**(r_floor)와 같고, Baseline은 **0.000569**(clamp 62.9%)다.
+> 즉 저속 헤드라인은 clamp가 지배하며, raw 기준 PINN은 Baseline보다 나쁘다. 실제 비행 112의 +0.00 m도
+> clamp 전 −3.52 m, projected model −0.00 m, t=5 s −11.24 m이므로 학습 기여로 해석하지 않는다.
 
 논문 기반:
 - Raissi et al. (2019). *Physics-Informed Neural Networks*. Journal of Computational Physics. — 개념 배경이며, 이 실습은 PDE solver가 아니다.
