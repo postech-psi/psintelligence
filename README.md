@@ -92,6 +92,9 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 
 목표: 탄도 기준식을 출력 구조에 활용하고, 정성적 물리 prior를 학습에 추가한다. 원 논문의 PDE 해 복원이나 계수 식별을 직접 구현한 것은 아니다.
 
+> ⚠️ Step 3는 기존 ASL 라벨과 시간 포함 7특징을 쓰는 **legacy 참고 구현**이다.
+> v2 GRU의 AGL·관성가속도·공통 endpoint 결과와 직접 비교해 아키텍처 우열을 주장하지 않는다.
+
 핵심 내용:
 - 물리 기반 출력: `G=v_z²/(2g)`, `H_pred=(h+G)·r_eff`. r은 저장 라벨 `H/(h+G)`에 대응하는 보정 배율이다.
 - Hard Constraint: bounded raw output과 하한 projection으로 유효 입력 영역에서 `H_pred≥h`를 구조적으로 강제한다. 이는 전체 운동방정식·에너지 보존·정확도·안전성의 보장이 아니다.
@@ -119,7 +122,13 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 - Physics Wrapper: `h_apogee = (h + v²/2g)·r` 를 **학습 손실에도 포함** (r 손실 + 아포지 손실)
 - 좌표계: 시뮬의 해발 고도 407 m를 빼고 **발사대 상대고도(AGL)** 로 입력·라벨·physics head를 통일.
   동압도 같은 AGL 기준 ISA 근사로 계산한다. `r` head는 `1+0.5·tanh`로 `0.5~1.5`를 표현한다.
+- 가속도: `acceleration_inertial = acceleration_noisy - 9.81`(sim), 실기 `accel_g*9.80665`.
+  기존 `acceleration_noisy` 원본은 보존한다.
+- 출력: 모델은 **raw r/H**를 반환한다. `H_projected=max(H_raw,h)`는 진단용 옵션이며 학습·best 선택에 쓰지 않는다.
 - 스케일러는 train 비행에만 fit. 학습 종료 후 validation best state를 복원해 평가·UQ·ONNX가 같은 checkpoint를 쓴다.
+- 실험 계약은 `apogee_pipeline.py`, raw/projection 모델은 `apogee_models.py`, benchmark는
+  `scripts/benchmark_apogee.py --dry-run`을 사용한다. split/baseline manifest는
+  `data/experiments/apogee-v2/`에 있다.
 
 > GRU가 특정 핀 틀어짐을 “기억”하는지, 과거 이력이 실제로 기여하는지는 window 길이·특징 제거·
 > snapshot 기준선 ablation 없이는 확인되지 않았다. 현재 결과는 시계열 입력의 잠재적 유용성을
@@ -128,10 +137,14 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 > 실측(test 50비행/1,204창): GRU 아포지 MAE **0.99 m**, constant-r 기준선 **12.49 m** → **92.1% 개선**.
 > AGL 기준 target 범위는 **0.584~1.073**이다.
 >
+> ⚠️ 위 수치는 **기존 저장 artifact**(legacy specific-force feature, test 50비행)의 결과다.
+> 새 공통 split은 calibration 25 / test 25이고, raw/inertial 코드는 아직 재학습 전이다.
+> 따라서 0.99 m와 아래 3.97 m를 새 코드·새 split의 성능으로 인용하지 않는다.
+>
 > ⚠️ 이 수치는 시뮬레이션의 **정답 h/v(clean)** 를 physics head에 넣은 조건이다. 실기에서는
-> KF 추정값을 쓴다. 실제 비행 112는 AGL `0~185.46 m`로 학습 범위에 들어오며, 최종 raw 오차는
-> **3.97 m**, clamp 활성 12.3%다. 반환된 0.00 m는 clamp 결과이므로 성능으로 세지 않는다.
-> 또한 t≈3 s raw 오차는 약 **−30.5 m**로, 최종 한 점만으로 정확도를 일반화하지 않는다.
+> KF 추정값을 쓴다. 실제 비행 112는 AGL `0~185.46 m`로 학습 범위에 들어오며, 기존 artifact의 최종
+> raw 오차는 **3.97 m**, below-current 비율은 12.3%다. 최종 반환값 0.00 m는 projection 결과이므로
+> 성능으로 세지 않는다. 또한 t≈3 s raw 오차는 약 **−30.5 m**로, 최종 한 점만으로 정확도를 일반화하지 않는다.
 
 논문 기반:
 - Chung et al. (2014). *Empirical Evaluation of Gated Recurrent Neural Networks*. arXiv:1412.3555.
@@ -142,6 +155,10 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 ### [Step 5] Uncertainty Quantification: AI 의 자신감 측정
 
 목표: 예측 불확실성을 정량화하고, 그 한계를 확인한다. OOD 탐지는 Step 5.5의 커널+CP가 담당.
+
+> ⚠️ Step 5/6 코드는 공통 inertial feature와 raw 출력 경로로 갱신했지만, 저장된 UQ/ONNX
+> 출력은 기존 legacy artifact 실행 결과다. 새 scaler·checkpoint·calibration을 재생성하기 전에는
+> 두 결과를 같은 모델의 성능으로 합치지 않는다.
 
 > 실측: native MC Dropout 95% 포함률 **86.2%** (독립 cal 25비행/test 25비행).
 > 창 CP: 경험적 창 포함률 **94.6%**, 폭 **8.8 m**. 비행 최대잔차 CP: 비행 포함률 **96.0%**, 폭 **23.1 m**.
@@ -332,8 +349,33 @@ python scripts/verify_dataset.py --data-dir <경로>  # 생성 데이터 검사
 python main.py --csv data/112.txt
 ```
 
-출력: AGL 기준 raw r, clamp 전/후 예측, 로그 최대값, constant-r(r=1) 기준선.
-실제 로그의 고도는 발사 시점을 0으로 둔 AGL로 변환해 사용한다.
+출력: AGL 기준 **raw r/H**, raw 오차, 로그 최대값, constant-r(r=1) 기준선,
+`below_current_altitude` 비율. 실제 로그 고도는 발사 시점을 0으로 둔 AGL로 변환한다.
+projection까지 보려면 `--show-projected`를 명시한다.
+
+현재 배포 artifact는 legacy specific-force scaler로 학습된 것이므로 CLI 기본
+`--accel-encoding legacy`가 scaler mean을 한 번 이동해 관성가속도 입력과 맞춘다.
+새 bundle을 학습한 뒤에는 `--accel-encoding inertial`으로 전환한다.
+
+### 공통 실험 계약
+
+```bash
+python test_apogee_pipeline.py
+python test_apogee_benchmark.py
+python -m py_compile apogee_pipeline.py apogee_models.py main.py
+python scripts/benchmark_apogee.py --dry-run --windows 25 50 100
+python scripts/benchmark_apogee.py --dry-run --state-source estimated
+```
+
+- `data/experiments/apogee-v2/split_manifest.json`: train 120 / validation 30 /
+  calibration 25 / test 25.
+- `data/experiments/apogee-v2/baseline_manifest.json`: data/model/scaler hash,
+  feature 순서, legacy specific-force artifact encoding, AGL datum, state source.
+- benchmark는 `data/experiments/apogee-v2/<run>`에만 쓰며 `data/simulated/` 정본을
+  덮어쓰지 않는다.
+- calibration 25비행은 모델 선택·학습에 사용하지 않는다.
+- 현재 torch 학습/추론은 실행 제한으로 검증하지 않았다. `test_apogee_models.py`와
+  실제 benchmark 수치는 torch 허용 환경에서 별도 실행해야 한다.
 
 
 ---

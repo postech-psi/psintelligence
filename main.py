@@ -3,8 +3,9 @@
 Usage:
     python main.py --csv data/112.txt
 
-Loads the Step 4 GRU checkpoint and scaler, parses a raw flight log, and
-prints launch-relative apogee diagnostics at the last available window.
+Parses a raw flight log, converts it to the shared AGL/inertial feature
+contract, and prints raw apogee diagnostics.  Projection below the current
+altitude is an optional diagnostic, not the default model output.
 """
 from __future__ import annotations
 
@@ -16,18 +17,16 @@ import joblib
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
 
-FEATURES = [
-    "altitude_noisy_rel",
-    "velocity_z",
-    "acceleration_noisy",
-    "tilt_angle",
-    "gyro_roll_noisy",
-    "dynamic_pressure",
-]
+import apogee_pipeline as ap
+from apogee_models import (
+    GRUApogeeModel,
+    project_apogee,
+    raw_apogee,
+    validate_physics_inputs,
+)
+
 WINDOW = 100
-G = 9.81
 LOG_RE = re.compile(
     r"Time:\s*([\d\.]+)s.*"
     r"Euler:\s*\(([-\d\.]+),\s*([-\d\.]+),\s*([-\d\.]+)\).*"
@@ -37,30 +36,9 @@ LOG_RE = re.compile(
 )
 
 
-class GRUModel(nn.Module):
-    def __init__(self, input_dim=6, hidden_dim=128, num_layers=2, dropout=0.2):
-        super().__init__()
-        self.gru = nn.GRU(
-            input_dim, hidden_dim, num_layers, batch_first=True,
-            dropout=dropout if num_layers > 1 else 0,
-        )
-        self.fc = nn.Sequential(
-            nn.Linear(hidden_dim, 64), nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(64, 1), nn.Tanh(),
-        )
-
-    def forward(self, x, h_curr, v_z):
-        out, _ = self.gru(x)
-        r = 1.0 + 0.5 * self.fc(out[:, -1, :]).squeeze(-1)
-        denom = h_curr + (v_z ** 2) / (2 * G)
-        r = torch.maximum(r, h_curr / denom.clamp(min=1e-6))
-        return denom * r, r
-
-
 def parse_log(path: Path) -> pd.DataFrame:
     lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
     launch_time = None
-    pad_alt = None
     rows = []
     for line in lines:
         m = LOG_RE.search(line)
@@ -72,81 +50,89 @@ def parse_log(path: Path) -> pd.DataFrame:
             launch_time = t_sys
         if launch_time is None:
             continue
-
         alt_abs = float(m.group(9))
-        if pad_alt is None:
-            pad_alt = alt_abs
-        altitude_rel = alt_abs - pad_alt
         vel = float(m.group(10))
         acc_ms = acc_g * 9.80665
         pitch = float(m.group(3))
         gyro_roll = np.deg2rad(float(m.group(7)))
-        rho = 1.225 * np.exp(-0.00012 * abs(altitude_rel))
         rows.append({
+            "flight_id": 0,
             "time": t_sys - launch_time,
             "altitude": alt_abs,
-            "altitude_rel": altitude_rel,
+            "altitude_noisy": alt_abs,
             "velocity_z": vel,
+            "accel_g": acc_g,  # already gravity-removed in the logger
             "acceleration_z": acc_ms,
             "tilt_angle": -abs(pitch),
             "gyro_roll": gyro_roll,
-            "dynamic_pressure": 0.5 * rho * vel ** 2,
-            "altitude_noisy": alt_abs,
-            "altitude_noisy_rel": altitude_rel,
-            "acceleration_noisy": acc_ms,
             "gyro_roll_noisy": gyro_roll,
         })
+    if not rows:
+        raise SystemExit("no usable rows in log")
     return pd.DataFrame(rows)
 
 
+def _prepare_scaler(scaler, accel_encoding: str):
+    if accel_encoding == "legacy":
+        return ap.adapt_legacy_scaler_to_inertial(scaler)
+    if accel_encoding == "inertial":
+        return scaler
+    raise SystemExit(f"unsupported acceleration encoding: {accel_encoding}")
+
+
 def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--csv", default="data/112.txt", help="raw flight log")
-    ap.add_argument("--model", default="data/simulated/best_gru_model.pth")
-    ap.add_argument("--scaler", default="data/simulated/input_scaler.pkl")
-    ap.add_argument("--window", type=int, default=WINDOW)
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--csv", default="data/112.txt", help="raw flight log")
+    parser.add_argument("--model", default="data/simulated/best_gru_model.pth")
+    parser.add_argument("--scaler", default="data/simulated/input_scaler.pkl")
+    parser.add_argument("--window", type=int, default=WINDOW)
+    parser.add_argument("--show-projected", action="store_true",
+                        help="also print max(H_raw, h) diagnostics")
+    parser.add_argument(
+        "--accel-encoding",
+        choices=["legacy", "inertial"],
+        default="legacy",
+        help="legacy: scaler was fit on specific force; adapt once for inertial input",
+    )
+    args = parser.parse_args()
 
     scaler = joblib.load(args.scaler)
-    model = GRUModel(input_dim=len(FEATURES))
+    scaler = _prepare_scaler(scaler, args.accel_encoding)
+    model = GRUApogeeModel(input_dim=len(ap.FEATURE_COLUMNS))
     state = torch.load(args.model, map_location="cpu")
-    # Checkpoints are saved from PhysicsInformedGRU, so strip the "gru." prefix.
-    state = {k[4:] if k.startswith("gru.") else k: v for k, v in state.items()}
-    model.load_state_dict(state)
+    model.load_legacy_state_dict(state)
     model.eval()
 
-    df = parse_log(Path(args.csv))
-    if len(df) < args.window:
-        raise SystemExit(f"log too short: {len(df)} rows < window {args.window}")
+    raw = parse_log(Path(args.csv))
+    frame = ap.make_real_features(raw)
+    ap.validate_time_order(frame)
+    if len(frame) < args.window:
+        raise SystemExit(f"log too short: {len(frame)} rows < window {args.window}")
 
-    x = torch.tensor(scaler.transform(df[FEATURES].values), dtype=torch.float32)
-    x = x.unfold(0, args.window, 1).transpose(-1, -2)  # (N, window, features)
-    h = torch.tensor(df["altitude_rel"].values[args.window - 1:], dtype=torch.float32)
-    v = torch.tensor(df["velocity_z"].values[args.window - 1:], dtype=torch.float32)
+    values = frame[list(ap.FEATURE_COLUMNS)].to_numpy(dtype=np.float32)
+    x = torch.tensor(scaler.transform(values), dtype=torch.float32)
+    x = x.unfold(0, args.window, 1).transpose(-1, -2)
+    h = torch.tensor(frame["altitude_rel"].values[args.window - 1:], dtype=torch.float32)
+    v = torch.tensor(frame["velocity_z"].values[args.window - 1:], dtype=torch.float32)
+    denom = validate_physics_inputs(h, v)
 
     with torch.no_grad():
-        out, _ = model.gru(x)
-        raw_ratio = 1.0 + 0.5 * model.fc(out[:, -1, :]).squeeze(-1)
-        denom = h + (v ** 2) / (2 * G)
-        floor = h / denom.clamp(min=1e-6)
-        ratio = torch.maximum(raw_ratio, floor)
-        raw_apogee = denom * raw_ratio
-        apogee = denom * ratio
+        r_raw, _ = model(x)
+        h_raw = raw_apogee(h, v, r_raw)
+        h_projected, r_projected, below = project_apogee(h, v, r_raw)
 
-    # Constant-r baseline (r=1): physics-only prediction.
-    baseline = denom
-    logged_max = float(df["altitude_rel"].max())
-    print(f"rows={len(df)} window={args.window}")
-    print(f"raw r (last window):            {raw_ratio[-1].item():.4f}")
-    print(f"clamp floor (last window):      {floor[-1].item():.4f}")
-    print(f"returned r (last window):       {ratio[-1].item():.4f}")
-    print(f"raw apogee AGL (last window):   {raw_apogee[-1].item():.2f} m")
-    print(f"raw error vs logged max:        {raw_apogee[-1].item() - logged_max:.2f} m")
-    print(f"returned apogee AGL:            {apogee[-1].item():.2f} m")
-    print(f"returned error vs logged max:   {apogee[-1].item() - logged_max:.2f} m")
-    print(f"clamp applied (all windows):    {float((raw_ratio < floor).float().mean()) * 100:.1f}%")
-    print(f"constant-r (r=1) baseline:      {baseline[-1].item():.2f} m")
-    print(f"physics gain:                   {((v[-1] ** 2) / (2 * G)).item():.2f} m")
+    logged_max = float(frame["altitude_rel"].max())
+    print(f"rows={len(frame)} window={args.window}")
+    print(f"raw r (last window):            {r_raw[-1].item():.4f}")
+    print(f"raw apogee AGL (last window):   {h_raw[-1].item():.2f} m")
+    print(f"raw error vs logged max:        {h_raw[-1].item() - logged_max:.2f} m")
+    print(f"constant-r (r=1) AGL:           {denom[-1].item():.2f} m")
+    print(f"below-current flag (last):      {bool(below[-1].item())}")
+    print(f"below-current rate (all):       {float(below.float().mean()) * 100:.1f}%")
+    if args.show_projected:
+        print(f"projected r (last window):      {r_projected[-1].item():.4f}")
+        print(f"projected apogee AGL:           {h_projected[-1].item():.2f} m")
+        print(f"projected error vs logged max:  {h_projected[-1].item() - logged_max:.2f} m")
 
 
 if __name__ == "__main__":

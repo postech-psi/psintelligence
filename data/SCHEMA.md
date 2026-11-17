@@ -207,6 +207,8 @@ roll :  ṗ = a·cant·q − b·q·p                     a = 1e-2, b = 3e-4
 | D17 | `step2` 노트북 | EKF 와 UKF 의 혁신이 최대차 1.4e-11(상관 1.0000000000)로 **수학적으로 동일**. 구현된 필터는 상태에 대해 선형(비선형성은 측정된 입력 u 에만 존재)이라 EKF 야코비안이 정확 → UKF 가 개선할 여지가 없음. 본문의 "강력한 비선형" 서술과 구현이 불일치 | **정정 완료** — §1.1 에 구현이 기구학 추적기임을 명시, 판정에 1e-9 허용오차 추가, Joseph form 구현 |
 | D18 | Step 3/4/5 실제 비행 파서 | 실제 로그 `Gyro` 는 deg/s, 시뮬 `gyro_*` 는 rad/s. 변환 없이 특징에 넣으면 57.3배 스케일 오류 | **정정 완료** — 파서에서 `np.deg2rad`, 문서 단위 rad/s 로 통일 |
 | D19 | Step 4/5/6 GRU | 시뮬 `altitude` 는 해발 고도로 발사대 407 m 고정, 실기 로그는 1.007~186.464 m. 절대고도를 그대로 특징·라벨·physics head에 쓰면 학습 범위 밖이며 `r` 상한 1.2로도 필요한 값을 표현 못 함 | **부분 정정** — Step 4/5/6을 발사대 상대고도(AGL)로 통일하고 `r=1+0.5·tanh`로 확장. sim test MAE 0.99 m, 실기 112 최종 raw 3.97 m(clamp 12.3%)이지만 t≈3 s raw 오차 −30.5 m와 단일 실기 로그 한계는 남음. Step 3 PINN은 별도 후속 |
+| D20 | feature/accelerometer 계약 | sim `acceleration_noisy`는 specific force(g 포함), 실기 `Accel_z`는 중력 제거 가속도. 같은 이름으로 섞으면 9.81 m/s² 편향 | **정정 완료** — 공통 `acceleration_inertial` 파생 필드와 scaler mean 이동 동치성. 원본 컬럼 보존. body 축 일치는 미확인 |
+| D21 | 학습/평가/배포 경로 | Step 4는 마지막 epoch 모델을 평가하면서 best checkpoint를 저장했고, clamp가 raw gradient와 아포지 오차를 가림. Step 5/6/CLI도 같은 계약을 쓰지 않음 | **부분 정정** — best state 복원, raw validation, projection 분리, 공통 endpoint/split manifest, 공통 raw benchmark 추가. torch 실행 제한으로 실제 benchmark·재학습은 미검증 |
 
 ### 5.1 OOD 세트 (Step 5.5 용) — `data/simulated/ood/`
 
