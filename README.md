@@ -93,13 +93,13 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 목표: 데이터 부족 환경에서도 물리 법칙을 위반하지 않는 예측
 
 핵심 내용:
-- Hard Constraint: 출력층에 물리 식 내장 (아포지 = 현재고도 + v²/2g × r)
+- Hard Constraint: 출력층에 물리 식 내장 (아포지 = (현재고도 + v²/2g) × r)
 - Soft Constraint: Loss 함수에 물리 항 추가 (범위 0.8~1.7, 관성 구간 r 비감소)
 - Stability Masking: 아포지 근처 (v→0) 수치 불안정성 제거
 - `energy_ratio` 는 0~1 로 유계가 아니다. 연소 중 r>1 은 추력 일 때문이며, `clip` 하지 않는다 (SCHEMA §2.1).
 
-> 실측(통제 ablation): coast `r≤1` 제약을 켜면 저속 RMSE **0.00123** vs coast off **0.00430**,
-> Baseline **0.00192**. 다만 실제 비행에서는 PINN +1.99 m vs constant-r +1.67 m로 아직 열위.
+> 실측(통제 ablation, 단일 seed): coast off/on 저속 RMSE **0.000359** (동일), Baseline **0.00192**.
+> 실제 비행 112에서는 PINN **+0.00 m** vs constant-r **+1.67 m** — 단일 비행 결과이며 일반화 주장은 아님.
 
 논문 기반:
 - Raissi et al. (2019). *Physics-Informed Neural Networks*. Journal of Computational Physics.
@@ -113,10 +113,13 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 핵심 내용:
 - Sliding Window: (Batch, Seq_Len, Features) 3D 텐서 전처리 (window=100, stride=10)
 - Hidden State: 과거 100 스텝 (2 초) 비행 이력 압축 저장
-- Physics Wrapper: `h_apogee = h + v²/2g·r` 를 **학습 손실에도 포함** (r 손실 + 아포지 손실)
+- Physics Wrapper: `h_apogee = (h + v²/2g)·r` 를 **학습 손실에도 포함** (r 손실 + 아포지 손실)
 - 스케일러는 train 비행에만 fit (누수 방지)
 
-> 실측(test 50비행/1,204창): GRU 아포지 MAE **8.45 m**, constant-r 기준선 **12.49 m** → **32.3% 개선**.
+> 실측(test 50비행/1,204창): GRU 아포지 MAE **1.24 m**, constant-r 기준선 **12.49 m** → **90.1% 개선**.
+>
+> ⚠️ 이 수치는 시뮬레이션의 **정답 h/v(clean)** 를 physics head에 넣은 조건이다. 실기에서는
+> KF 추정값을 쓰므로, noisy 센서·추정기까지 포함한 배포 성능은 별도 실험이 필요하다.
 
 논문 기반:
 - Chung et al. (2014). *Empirical Evaluation of Gated Recurrent Neural Networks*. arXiv:1412.3555.
@@ -128,9 +131,10 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 
 목표: 예측 불확실성을 정량화하고, 그 한계를 확인한다. OOD 탐지는 Step 5.5의 커널+CP가 담당.
 
-> 실측: native MC Dropout 95% 포함률 **12.9%** → split conformal **97.5%** (독립 cal 25비행/test 25비행).
-> conformal 폭 63.3 m(평균의 11.3%). OOD AUROC(비행별 σ 95분위, 정상 25 vs OOD 50)는 **0.327**,
-> 계열별 mass 0.056 · loft 0.209 · drag 0.535 · wind 0.509 — dropout 단독 OOD 탐지는 실패.
+> 실측: native MC Dropout 95% 포함률 **88.8%** → conformal(창) **92.6%**, 비행 최대잔차 CP **96.0%**
+> (독립 cal 25비행/test 25비행). conformal 폭 9.6 m(평균의 1.7%).
+> OOD AUROC(비행별 σ 95분위, 정상 25 vs OOD 50)는 **0.398** — mass 0.000 · loft 0.587 ·
+> drag 0.603 · wind 0.509. dropout 단독 OOD 탐지는 계열 선택적.
 
 핵심 내용:
 - Aleatoric Uncertainty: 센서 노이즈 등 데이터 고유 불확실성 (이 노트북은 **구현하지 않음**)
