@@ -9,7 +9,7 @@
 
 | 테마 | 설명 | 적용 단계 |
 |------|------|----------|
-| 물리 법칙 준수 | AI 예측이 에너지 보존, 운동 방정식 등 물리 법칙을 위반하지 않도록 제약 | Step 3 (PINN) |
+| 물리 기반 제약 | 탄도식 출력 head와 soft prior로 예측을 제한 (전체 물리 법칙 보장 아님) | Step 3 (PINN-style) |
 | 시계열 맥락 학습 | 과거 비행 이력 (자이로 요동, 틸트 등) 을 기반으로 미래 예측 | Step 4 (GRU) |
 | 불확실성 정량화 | AI 가 "자신의 무지"를 인식하고, 위험 상황에서 안전모드 진입 | Step 5 (UQ) |
 | 온보드 배포 | 제한된 메모리/전력의 비행 컴퓨터에서 실시간 추론 가능 | Step 6 (Quantization+ONNX) |
@@ -80,7 +80,7 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 - EKF: 상태 전이 야코비안과 Joseph form 공분산 갱신
 - UKF: Unscented Transform 으로 평균/공분산 전파
 - **교육 포인트:** 상태 전이와 측정이 상태에 대해 선형이므로 두 필터는 수치적으로 동일하다.
-  UKF 의 UT 가 항등 변환이 되는 이유를 설명한다.
+  UKF 의 UT 가 아핀 변환의 평균·공분산을 정확히 전파하는 이유를 설명한다.
 - 시뮬레이션 200편 검증 (Bella Lui 수치는 외부 예시로만 인용)
 
 > 교재의 비선형 로켓 동역학(추력·항력·중력)은 §1.1 에 서술되어 있지만, 이 노트북의
@@ -88,14 +88,15 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 
 ---
 
-### [Step 3] PINN: 물리 법칙을 지키는 인공지능
+### [Step 3] Physics-informed regression: 물리 기반 제약을 쓰는 아포지 예측
 
-목표: 데이터 부족 환경에서도 물리 법칙을 위반하지 않는 예측
+목표: 탄도 기준식을 출력 구조에 활용하고, 정성적 물리 prior를 학습에 추가한다. 원 논문의 PDE 해 복원이나 계수 식별을 직접 구현한 것은 아니다.
 
 핵심 내용:
-- Hard Constraint: 출력층에 물리 식 내장 (아포지 = (현재고도 + v²/2g) × r)
-- Soft Constraint: Loss 함수에 물리 항 추가 (범위 0.8~1.7, 시간 좌표 편미분 soft penalty, 관성 r≤1)
-- Stability Masking: 아포지 근처 (v→0) 수치 불안정성 제거
+- 물리 기반 출력: `G=v_z²/(2g)`, `H_pred=(h+G)·r_eff`. r은 저장 라벨 `H/(h+G)`에 대응하는 보정 배율이다.
+- Hard Constraint: bounded raw output과 하한 projection으로 유효 입력 영역에서 `H_pred≥h`를 구조적으로 강제한다. 이는 전체 운동방정식·에너지 보존·정확도·안전성의 보장이 아니다.
+- Soft Constraint: 범위 벌점, 관성 구간 `r>1` 벌점, 다른 특징을 고정한 시간 좌표 편미분의 음수 벌점을 적용한다. 정확한 만족이나 실제 궤적 단조성은 보장하지 않는다.
+- Stability Masking: 저속 구간에서 보조 penalty의 적용을 제한한다. 현재 r 정의에서 `v_z→0`이 분모 특이점은 아니다.
 - `energy_ratio` 는 0~1 로 유계가 아니다. 연소 중 r>1 은 추력 일 때문이며, `clip` 하지 않는다 (SCHEMA §2.1).
 
 > 실측(단일 seed, clamp 분리): 저속 raw RMSE Baseline **0.001916**, PINN coast off **0.140730**,
@@ -104,19 +105,23 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 > −3.52 m, clamp-only −0.00 m, t=5 s −11.24 m이므로 학습 기여로 해석하지 않는다.
 
 논문 기반:
-- Raissi et al. (2019). *Physics-Informed Neural Networks*. Journal of Computational Physics.
+- Raissi et al. (2019). *Physics-Informed Neural Networks*. Journal of Computational Physics. — 개념 배경이며, 이 실습은 PDE solver가 아니다.
 
 ---
 
-### [Step 4] GRU: 과거의 결함을 기억하는 시계열 추정기
+### [Step 4] GRU: 시계열 맥락을 이용하는 아포지 추정기
 
-목표: 발사 직후의 핀 틀어짐, 자이로 요동 등 과거 이력이 현재 아포지에 미치는 영향 학습
+목표: 제한된 센서 관측에서 현재 snapshot만으로 식별하기 어려운 상태·기체 특성·환경 정보를 과거 window로 추정한다.
 
 핵심 내용:
 - Sliding Window: (Batch, Seq_Len, Features) 3D 텐서 전처리 (window=100, stride=10)
 - Hidden State: 과거 100 스텝 (2 초) 비행 이력 압축 저장
 - Physics Wrapper: `h_apogee = (h + v²/2g)·r` 를 **학습 손실에도 포함** (r 손실 + 아포지 손실)
 - 스케일러는 train 비행에만 fit (누수 방지)
+
+> GRU가 특정 핀 틀어짐을 “기억”하는지, 과거 이력이 실제로 기여하는지는 window 길이·특징 제거·
+> snapshot 기준선 ablation 없이는 확인되지 않았다. 현재 결과는 시계열 입력의 잠재적 유용성을
+> 보여주는 것이지 인과적 기억 메커니즘의 증거가 아니다.
 
 > 실측(test 50비행/1,204창): GRU 아포지 MAE **1.24 m**, constant-r 기준선 **12.49 m** → **90.1% 개선**.
 >
@@ -142,10 +147,11 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 
 핵심 내용:
 - Aleatoric Uncertainty: 센서 노이즈 등 데이터 고유 불확실성 (이 노트북은 **구현하지 않음**)
-- Epistemic Uncertainty: 모델 무지 (데이터 추가 시 감소, OOD 감지용)
-- MC Dropout: 추론 시 Dropout 켜고 T 번 샘플링하여 분산 계산
-- 95% **예측구간** (`mean ± 1.96σ`) 기반 사출 로직:
-  `σ < 2 m` **그리고** `mean - 1.96σ ≤ 현재고도` 일 때만 사출 승인
+- Epistemic Uncertainty: 모델 무지. OOD에서 항상 커진다는 보장은 없으며 별도 검증이 필요하다.
+- MC Dropout: dropout으로 학습한 모델에서 추론 시 dropout을 유지해 T회 순전파. T회 비용이 들고, 지연은 병렬 자원·배치에 의존한다.
+- `mean ± 1.96σ_MC`: 보정 전 **dropout 변동 띠**다. 95% 예측 포함률을 보장하지 않는다.
+- conformal 구간: 별도 calibration 절차. 창 단위와 비행 최대잔차 단위를 구분한다.
+- 사출 예시의 `σ<2 & lower≤h`는 교육용 후보 규칙이며, 아포지 도달·안전 사출을 보장하지 않는다.
 
 논문 기반:
 - Gal & Ghahramani (2016). *Dropout as a Bayesian Approximation*. ICML.
@@ -155,15 +161,16 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 
 ### [Step 5.5] 커널 기반 이상 탐지 + Conformal Prediction
 
-목표: 물리로 잡을 수 있는 오류는 exact 보장으로, 못 잡는 것은 distribution-free 보장으로
+목표: 물리 잔차 기반 검정과 distribution-free(교환가능성 가정) CP를 계층적으로 결합
 
 핵심 내용:
 - 명목 물리모델 잔차 — 명목 질량·Cd·발사각으로 동역학을 적분해 비행체 이상을 드러냄
   (Step 2 의 기구학 추적기는 측정 가속도를 입력으로 써서 파라미터 이탈을 못 잡음 — 실측 1.00x)
-- L1 χ² 검정 — 잔차의 통계량. 이론 임계는 백색성 위반으로 성립하지 않아(자기상관 +0.40)
-  calibration 창에서 재설정 (Mehra 1971 계열, 잔차 백색화는 남은 과제)
-- L2 OC-SVM(RBF) + CP — 비가우시안·모델오차 잔차를 분포 무가정으로 처리
-- 비행 단위 CP calibration — 창이 아니라 비행 단위. 창들은 상관되어 있어 실효 표본수가 비행 수에 불과
+- L1 χ² 검정 — 잔차가 독립 표준정규이고 공분산이 올바를 때 χ². 현재는 근사이며,
+  백색성 위반(자기상관 +0.40)으로 이론 임계 대신 calibration 임계를 사용한다 (Mehra 1970 계열).
+- L2 OC-SVM(RBF) + CP — 비가우시안·모델오차 잔차를 다루는 one-class 경계 + CP
+- 비행 단위 CP — 사전에 정의한 비행별 점수의 교환가능성 아래 marginal 보장. 창 상관 자체가
+  CP를 무효화하지는 않지만, 창 단위 점수와 비행 단위 사건은 다른 보장 대상이다.
 - Safe-Logic 2.0 연동 — L0/L1 결정적 우선, L2 는 N-of-M + 히스테리시스 (`safe_logic.py`)
 
 실측 결과 (정상 200편 + OOD 50편, FPR 목표 ≤ 10%, 비행 단위):
@@ -178,6 +185,7 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 > L1 은 calibration 50편에서 FPR 10% 로 맞췄지만 test 50편에서 14% 로 튄다.
 > 50비행 분위수 추정의 한계이며, N-of-M 규칙 전체를 CP 로 calibration 하는 것이 남은 과제다.
 > 창 단위 CP + N-of-M 은 비행 FPR 이 36% 이므로, 비행 단위 보장이 필요하면 OC-SVM+CP(8%)를 쓴다.
+> 이 8%는 한 test 집합의 경험적 비율이며, 이론적 marginal 보장의 증명이 아니다.
 
 계열별로는 질량 93 - 100% · 항력 67 - 100% · 저각 11 - 56% · 강풍 0 - 18% 로 탐지가 계열 선택적
 
@@ -192,10 +200,10 @@ python scripts/model_filter.py      # 명목 물리모델 잔차 → residuals.n
 - Tax & Duin (2004). Support Vector Data Description. Machine Learning. — SVDD
 - Vovk et al. (2005). Algorithmic Learning in a Random World. — Conformal Prediction
 - Angelopoulos & Bates (2021). A Gentle Introduction to Conformal Prediction. arXiv 2107.07511.
-- Mehra (1971). On the Identification of Variances and Adaptive Kalman Filtering. IEEE TAC.
+- Mehra, R. (1970). On the Identification of Variances and Adaptive Kalman Filtering. IEEE TAC 15(2), 175–184.
 
-> 한계: 시뮬 기반이라 CP 보장은 calibration 분포 안에서만 유효하다. 
-> 자세한 내용은 노트북 참조.
+> 한계: 시뮬 기반 CP 보장은 calibration/test 교환가능성과 사전에 정의한 score/사건에만 적용된다.
+> 위상별 FPR, 조건부 FPR, 다른 N-of-M 사건에는 별도 정당화가 필요하다.
 
 ---
 
@@ -203,16 +211,16 @@ python scripts/model_filter.py      # 명목 물리모델 잔차 → residuals.n
 
 > 이 단계는 **GRU 배포** 실습이다. Mamba 는 이론 배경으로만 소개하며, 실제 모델은 Step 4의 GRU다.
 
-목표: 제한된 온보드 자원에서 실시간 추론
+목표: 호스트에서 GRU 경량화·ONNX export를 실습한다. MCU 탑재는 별도 변환·툴체인 검증이 필요하다.
 
 핵심 내용:
-- Quantization: FP32 → INT8 동적 양자화 (모델 크기 약 1/4)
-- ONNX Export: `apogee` 와 `energy_ratio` 를 **함께** 출력해 C++ 물리 후처리 제거
+- Quantization: PyTorch dynamic INT8 (파일 크기 약 1/4, 이 PC CPU 지연은 별도)
+- ONNX Export: FP32 `apogee` + `energy_ratio` 두 출력. INT8 ONNX 변환은 이 실습 범위 밖
 - 수치 동등성: 같은 입력에서 PyTorch↔ONNX 최대 차이 출력
 - 속도 벤치마크: 이 PC CPU 기준. 온보드 MCU 지연은 별도 측정 필요
 
 산출물:
-- `rocket_gru.onnx`: 온보드 배포용 모델 (아포지 + r 두 출력)
+- `rocket_gru.onnx`: 호스트 검증용 FP32 ONNX (아포지 + r 두 출력)
 
 ---
 
@@ -333,7 +341,7 @@ python main.py --csv data/112.txt
 2. 물리 기반 AI: 데이터만 믿지 않고 물리 법칙을 제약 조건으로 활용
 3. 안전성 우선: 정확도보다 불확실성 인식과 Fail-safe 로직을 우선시
 4. 배포 고려: 연구실 PC 가 아닌 온보드 컴퓨터 제약을 고려한 모델 설계
-5. 논문 기반: 각 Step 의 이론적 배경을 유명 논문에서 발췌하여 학술적 엄밀함 확보
+5. 논문 기반: 관련 논문·공식 문서를 바탕으로 구성하되, 원 방법과 다른 단순화·구현 범위·미검증 한계를 구분
 
 ---
 
