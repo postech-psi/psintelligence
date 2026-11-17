@@ -100,9 +100,9 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 - `energy_ratio` 는 0~1 로 유계가 아니다. 연소 중 r>1 은 추력 일 때문이며, `clip` 하지 않는다 (SCHEMA §2.1).
 
 > 실측(단일 seed, clamp 분리): 저속 raw RMSE Baseline **0.001916**, PINN coast off **0.140730**,
-> coast on **0.020638**; clamp 후에는 모두 **0.000359**(r_floor 기준선)로 수렴. 즉 저속 헤드라인은
-> clamp가 지배하며, raw 기준 PINN은 Baseline보다 나쁘다. 실제 비행 112의 +0.00 m도 clamp 전
-> −3.52 m, clamp-only −0.00 m, t=5 s −11.24 m이므로 학습 기여로 해석하지 않는다.
+> coast on **0.020638**. clamp 후 두 PINN은 **0.000359**(r_floor)와 같고, Baseline은 **0.000569**(clamp 62.9%)다.
+> 즉 저속 헤드라인은 clamp가 지배하며, raw 기준 PINN은 Baseline보다 나쁘다. 실제 비행 112의 +0.00 m도
+> clamp 전 −3.52 m, projected model −0.00 m, t=5 s −11.24 m이므로 학습 기여로 해석하지 않는다.
 
 논문 기반:
 - Raissi et al. (2019). *Physics-Informed Neural Networks*. Journal of Computational Physics. — 개념 배경이며, 이 실습은 PDE solver가 아니다.
@@ -177,7 +177,7 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 
 | 방법 | FPR(비행) | TPR(비행) |
 |:--|:--:|:--:|
-| L1 χ² (N-of-M, 비행단위 보정) | 14.0% (cal 10%) | 64.0% |
+| L1 χ² (단발 초과, 비행단위 보정) | 14.0% (cal 10%) | 64.0% |
 | OC-SVM + CP | 8.0% | 56.0% |
 | KDE + CP | 6.0% | 52.0% |
 | kPCA + CP | 4.0% | 52.0% |
