@@ -36,6 +36,12 @@ Step 1 → Step 2 → Step 3 → Step 4 → Step 5 → Step 5.5 → Step 6
 > Step 1.5 (데이터 생성) 는 선택 단계입니다. 동봉된 `data/simulated/` 데이터로 Step 2~6 을 바로 실행할 수 있습니다.
 > Step 5.5 (이상 탐지) 는 `scripts/model_filter.py` · `scripts/generate_ood.py` 로 입력을 만들고 실행합니다.
 
+> ⚠️ **실기 검증 상태:** 현재 GRU는 해발 고도 `402.0~667.5 m`, PINN은 `401.5~667.5 m`로 학습됐다.
+> `data/112.txt` 실기 로그의 KF 고도는 `1.007~186.464 m`로 전 구간 학습 범위 밖이다. 또한 tilt angle은
+> 335행 중 5행이 학습 범위를 벗어난다. 따라서 `main.py`는 기본적으로 추론을 거부하며, 노트북의 112 결과도 **외삽 진단**일 뿐 실기 성능이 아니다.
+> 마지막 `0.00 m`는 clamp가 현재 고도를 반환한 값이다. 실제 발사장 기준·펌웨어 고도 기준을 확인하고
+> 라벨·스케일러·출력 범위를 재정의해 재학습하기 전까지 실기 예측 성공으로 인용하지 않는다.
+
 
 ## 각 Step 상세 설명
 
@@ -101,8 +107,8 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 
 > 실측(단일 seed, clamp 분리): 저속 raw RMSE Baseline **0.001916**, PINN coast off **0.140730**,
 > coast on **0.020638**. clamp 후 두 PINN은 **0.000359**(r_floor)와 같고, Baseline은 **0.000569**(clamp 62.9%)다.
-> 즉 저속 헤드라인은 clamp가 지배하며, raw 기준 PINN은 Baseline보다 나쁘다. 실제 비행 112의 +0.00 m도
-> clamp 전 −3.52 m, projected model −0.00 m, t=5 s −11.24 m이므로 학습 기여로 해석하지 않는다.
+> 즉 저속 헤드라인은 clamp가 지배하며, raw 기준 PINN은 Baseline보다 나쁘다. 실제 비행 112도 입력 고도가
+> 학습 범위 밖인 외삽이며, +0.00 m는 clamp 결과다(clamp 전 −3.52 m). t=5 s −11.24 m도 실기 성능이 아니다.
 
 논문 기반:
 - Raissi et al. (2019). *Physics-Informed Neural Networks*. Journal of Computational Physics. — 개념 배경이며, 이 실습은 PDE solver가 아니다.
@@ -127,7 +133,11 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 >
 > ⚠️ 이 수치는 시뮬레이션의 **정답 h/v(clean)** 를 physics head에 넣은 조건이다. 실기에서는
 > KF 추정값을 쓰므로, noisy 센서·추정기까지 포함한 배포 성능은 별도 실험이 필요하다.
-> 실제 비행 112의 0.00 m도 clamp 결과다 (clamp 전 33.25 m, clamp 활성 41.9%).
+> 실제 비행 112는 입력 고도가 학습 범위 `402.0~667.5 m` 밖(`1.007~186.464 m`)인 **외삽**이다.
+> 반환된 0.00 m는 clamp가 현재 고도를 반환한 값이며(clamp 전 오차는 저장 체크포인트에 따라
+> 약 1.6~33 m, clamp 활성 2.5~41.9%였다), 실기 예측 성공이 아니다. 로그 최대고도를 맞추려면
+> r 최대 **1.3037**이 필요한데, 현재 head 상한은
+> 1.2이므로 236창 중 4창은 구조적으로 표현할 수 없다.
 
 논문 기반:
 - Chung et al. (2014). *Empirical Evaluation of Gated Recurrent Neural Networks*. arXiv:1412.3555.
@@ -217,6 +227,8 @@ python scripts/model_filter.py      # 명목 물리모델 잔차 → residuals.n
 - Quantization: PyTorch dynamic INT8 (파일 크기 약 1/4, 이 PC CPU 지연은 별도)
 - ONNX Export: FP32 `apogee` + `energy_ratio` 두 출력. INT8 ONNX 변환은 이 실습 범위 밖
 - 수치 동등성: 같은 입력에서 PyTorch↔ONNX 최대 차이 출력
+- 입력 도메인 검사는 ONNX 그래프 밖이다. 배포 호출자는 `model_metadata.pkl`의 train min/max를
+  별도로 강제해야 하며, ONNX 단독 호출은 학습 범위 밖 입력을 거부하지 않는다.
 - 속도 벤치마크: 이 PC CPU 기준. 온보드 MCU 지연은 별도 측정 필요
 
 산출물:
@@ -322,13 +334,18 @@ python scripts/verify_dataset.py --data-dir <경로>  # 생성 데이터 검사
 
 ### 단일 비행 추론 데모
 
-학습된 GRU로 실제 로그 한 편의 아포지를 예측하려면:
+학습된 GRU로 실제 로그 한 편을 진단하려면:
 
 ```bash
 python main.py --csv data/112.txt
+# 입력 고도가 학습 범위(402.0~667.5 m)를 벗어나므로 REFUSING, exit 2
+
+python main.py --csv data/112.txt --allow-out-of-domain
+# 외삽 진단용. raw r, clamp 전/후, clamp 비율을 출력하며 성능으로 인정하지 않음
 ```
 
-출력: 마지막 윈도의 예측 아포지, 예측 r, constant-r(r=1) 기준선.
+`main.py`는 `model_metadata.pkl`의 train feature min/max로 입력 범위를 검사합니다.
+도메인 검사를 통과하지 못한 출력은 `STATUS: unvalidated extrapolation`으로 표시됩니다.
 
 
 ---

@@ -3,8 +3,9 @@
 Usage:
     python main.py --csv data/112.txt
 
-Loads the Step 4 GRU checkpoint and scaler, parses a raw flight log, and
-prints the predicted apogee at the last available window.
+Loads the Step 4 GRU checkpoint and scaler, parses a raw flight log, checks the
+input against the training feature range, and prints raw/clamped diagnostics.
+Out-of-domain input is refused unless --allow-out-of-domain is given.
 """
 from __future__ import annotations
 
@@ -17,6 +18,8 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+
+from inference_guard import check_feature_domain, format_domain_violations
 
 FEATURES = [
     "altitude_noisy",
@@ -98,10 +101,21 @@ def main() -> None:
     ap.add_argument("--csv", default="data/112.txt", help="raw flight log")
     ap.add_argument("--model", default="data/simulated/best_gru_model.pth")
     ap.add_argument("--scaler", default="data/simulated/input_scaler.pkl")
+    ap.add_argument("--metadata", default="data/simulated/model_metadata.pkl")
     ap.add_argument("--window", type=int, default=WINDOW)
+    ap.add_argument(
+        "--allow-out-of-domain",
+        action="store_true",
+        help="run despite training-range violations; output remains unvalidated",
+    )
     args = ap.parse_args()
 
     scaler = joblib.load(args.scaler)
+    metadata = joblib.load(args.metadata)
+    if metadata.get("feature_cols") != FEATURES:
+        raise SystemExit("metadata feature_cols do not match the model input order")
+    feature_min = metadata.get("feature_min")
+    feature_max = metadata.get("feature_max")
     model = GRUModel(input_dim=len(FEATURES))
     state = torch.load(args.model, map_location="cpu")
     # Checkpoints are saved from PhysicsInformedGRU, so strip the "gru." prefix.
@@ -113,21 +127,49 @@ def main() -> None:
     if len(df) < args.window:
         raise SystemExit(f"log too short: {len(df)} rows < window {args.window}")
 
+    if feature_min is None or feature_max is None:
+        print("WARNING: metadata has no training feature ranges; domain guard unavailable.")
+        print("         This run cannot be treated as a validated real-flight inference.")
+    else:
+        violations = check_feature_domain(
+            df, metadata["feature_cols"], feature_min, feature_max
+        )
+        print(format_domain_violations(violations))
+        if violations and not args.allow_out_of_domain:
+            print("REFUSING inference: input is outside the training domain.")
+            print("Use --allow-out-of-domain only to inspect the extrapolated output.")
+            raise SystemExit(2)
+
     x = torch.tensor(scaler.transform(df[FEATURES].values), dtype=torch.float32)
     x = x.unfold(0, args.window, 1).transpose(-1, -2)  # (N, window, features)
     h = torch.tensor(df["altitude"].values[args.window - 1:], dtype=torch.float32)
     v = torch.tensor(df["velocity_z"].values[args.window - 1:], dtype=torch.float32)
 
     with torch.no_grad():
-        apogee, ratio = model(x, h, v)
+        out, _ = model.gru(x)
+        raw_ratio = 1.0 + 0.2 * model.fc(out[:, -1, :]).squeeze(-1)
+        denom = h + (v ** 2) / (2 * G)
+        floor = h / denom.clamp(min=1e-6)
+        ratio = torch.maximum(raw_ratio, floor)
+        raw_apogee = denom * raw_ratio
+        apogee = denom * ratio
 
     # Constant-r baseline (r=1): physics-only prediction.
-    baseline = h + (v ** 2) / (2 * G)
+    baseline = denom
+    logged_max = float(df["altitude"].max())
     print(f"rows={len(df)} window={args.window}")
-    print(f"predicted apogee (last window): {apogee[-1].item():.2f} m")
-    print(f"predicted r (last window):      {ratio[-1].item():.4f}")
+    print(f"raw r (last window):            {raw_ratio[-1].item():.4f}")
+    print(f"clamp floor (last window):      {floor[-1].item():.4f}")
+    print(f"returned r (last window):       {ratio[-1].item():.4f}")
+    print(f"raw apogee (last window):       {raw_apogee[-1].item():.2f} m")
+    print(f"raw error vs logged max:        {raw_apogee[-1].item() - logged_max:.2f} m")
+    print(f"returned apogee (last window):  {apogee[-1].item():.2f} m")
+    print(f"returned error vs logged max:   {apogee[-1].item() - logged_max:.2f} m")
+    print(f"clamp applied (all windows):    {float((raw_ratio < floor).float().mean()) * 100:.1f}%")
     print(f"constant-r (r=1) baseline:      {baseline[-1].item():.2f} m")
     print(f"physics gain:                   {((v[-1] ** 2) / (2 * G)).item():.2f} m")
+    if feature_min is None or feature_max is None or violations:
+        print("STATUS: unvalidated extrapolation; not evidence of real-flight accuracy.")
 
 
 if __name__ == "__main__":
