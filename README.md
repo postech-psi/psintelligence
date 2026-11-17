@@ -94,12 +94,14 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 
 핵심 내용:
 - Hard Constraint: 출력층에 물리 식 내장 (아포지 = (현재고도 + v²/2g) × r)
-- Soft Constraint: Loss 함수에 물리 항 추가 (범위 0.8~1.7, 관성 구간 r 비감소)
+- Soft Constraint: Loss 함수에 물리 항 추가 (범위 0.8~1.7, 시간 좌표 편미분 soft penalty, 관성 r≤1)
 - Stability Masking: 아포지 근처 (v→0) 수치 불안정성 제거
 - `energy_ratio` 는 0~1 로 유계가 아니다. 연소 중 r>1 은 추력 일 때문이며, `clip` 하지 않는다 (SCHEMA §2.1).
 
-> 실측(통제 ablation, 단일 seed): coast off/on 저속 RMSE **0.000359** (동일), Baseline **0.00192**.
-> 실제 비행 112에서는 PINN **+0.00 m** vs constant-r **+1.67 m** — 단일 비행 결과이며 일반화 주장은 아님.
+> 실측(단일 seed, clamp 분리): 저속 raw RMSE Baseline **0.001916**, PINN coast off **0.140730**,
+> coast on **0.020638**; clamp 후에는 모두 **0.000359**(r_floor 기준선)로 수렴. 즉 저속 헤드라인은
+> clamp가 지배하며, raw 기준 PINN은 Baseline보다 나쁘다. 실제 비행 112의 +0.00 m도 clamp 전
+> −3.52 m, clamp-only −0.00 m, t=5 s −11.24 m이므로 학습 기여로 해석하지 않는다.
 
 논문 기반:
 - Raissi et al. (2019). *Physics-Informed Neural Networks*. Journal of Computational Physics.
@@ -120,6 +122,7 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 >
 > ⚠️ 이 수치는 시뮬레이션의 **정답 h/v(clean)** 를 physics head에 넣은 조건이다. 실기에서는
 > KF 추정값을 쓰므로, noisy 센서·추정기까지 포함한 배포 성능은 별도 실험이 필요하다.
+> 실제 비행 112의 0.00 m도 clamp 결과다 (clamp 전 33.25 m, clamp 활성 41.9%).
 
 논문 기반:
 - Chung et al. (2014). *Empirical Evaluation of Gated Recurrent Neural Networks*. arXiv:1412.3555.
@@ -131,10 +134,11 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 
 목표: 예측 불확실성을 정량화하고, 그 한계를 확인한다. OOD 탐지는 Step 5.5의 커널+CP가 담당.
 
-> 실측: native MC Dropout 95% 포함률 **88.8%** → conformal(창) **92.6%**, 비행 최대잔차 CP **96.0%**
-> (독립 cal 25비행/test 25비행). conformal 폭 9.6 m(평균의 1.7%).
-> OOD AUROC(비행별 σ 95분위, 정상 25 vs OOD 50)는 **0.398** — mass 0.000 · loft 0.587 ·
-> drag 0.603 · wind 0.509. dropout 단독 OOD 탐지는 계열 선택적.
+> 실측: native MC Dropout 95% 포함률 **88.6%** → conformal(창) **93.1%**, 비행 최대잔차 CP **96.0%**
+> (독립 cal 25비행/test 25비행). conformal 폭 9.9 m(평균의 1.8%).
+> OOD AUROC(비행별 σ 95분위, 정상 25 vs OOD 50)는 **0.390** — mass 0.000 · loft 0.533 ·
+> drag 0.619 · wind 0.491. dropout 단독 OOD 탐지는 계열 선택적.
+> conformal 후보 4.32 s(v=28.4 m/s)·3.80 s(v=31.5 m/s)는 모두 상승 중이므로 사출 성공이 아니다.
 
 핵심 내용:
 - Aleatoric Uncertainty: 센서 노이즈 등 데이터 고유 불확실성 (이 노트북은 **구현하지 않음**)
