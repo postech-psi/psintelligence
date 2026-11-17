@@ -10,6 +10,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -43,26 +44,82 @@ def _resample_and_endpoints(frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataF
     return sampled, endpoints
 
 
-def _samples_for_window(
+def _prepare_state_contract(
     sampled: pd.DataFrame,
+    endpoints: pd.DataFrame,
+    state_source: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Return NN feature frame and endpoint head/label source.
+
+    Clean mode uses simulated states for both.  Estimated mode replaces the
+    NN's altitude/velocity/dynamic-pressure features and the head h/v with the
+    same causal estimate, and recomputes r_target from the true apogee.
+    """
+    if state_source == "simulation_clean":
+        return sampled, endpoints
+    if state_source != "estimated":
+        raise ValueError(f"unsupported state_source: {state_source}")
+    state = ap.causal_state_estimate(sampled)
+    features = sampled.merge(
+        state, on=["flight_id", "time"], how="left", validate="one_to_one"
+    )
+    if features[["h_est", "v_est"]].isna().any().any():
+        raise RuntimeError("estimated state missing on the causal grid")
+    features["altitude_rel"] = features["h_est"]
+    features["altitude_noisy_rel"] = features["h_est"]
+    features["velocity_z"] = features["v_est"]
+    features["dynamic_pressure"] = 0.5 * 1.225 * np.exp(
+        -0.00012 * features["altitude_rel"].abs()
+    ) * features["velocity_z"] ** 2
+    head_endpoints = endpoints.merge(
+        state, how="left",
+        left_on=["flight_id", "endpoint_time"], right_on=["flight_id", "time"],
+    )
+    if head_endpoints[["h_est", "v_est"]].isna().any().any():
+        raise RuntimeError("estimated state missing at an endpoint")
+    head_endpoints["h"] = head_endpoints["h_est"]
+    head_endpoints["v"] = head_endpoints["v_est"]
+    head_endpoints["target"] = head_endpoints["apogee_rel"] / (
+        head_endpoints["h"] + head_endpoints["v"] ** 2 / (2 * ap.SIM_G)
+    )
+    return features, head_endpoints
+
+
+def _fit_endpoint_scaler(
+    features: pd.DataFrame,
+    endpoints: pd.DataFrame,
+    train_ids: Sequence[int],
+):
+    from sklearn.preprocessing import StandardScaler
+
+    rows = []
+    for flight_id in train_ids:
+        flight = features[features["flight_id"] == flight_id].reset_index(drop=True)
+        ep = endpoints[
+            (endpoints["flight_id"] == flight_id) & endpoints["window_valid"]
+        ]
+        idx = ep["endpoint_index"].to_numpy(dtype=int)
+        if len(idx):
+            rows.append(flight.iloc[idx][list(ap.FEATURE_COLUMNS)].to_numpy(dtype=np.float32))
+    if not rows:
+        raise RuntimeError("no common valid endpoints for scaler fit")
+    return StandardScaler().fit(np.concatenate(rows))
+
+
+def _samples_for_window(
+    features: pd.DataFrame,
     endpoints: pd.DataFrame,
     flight_ids: list[int],
     window: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     xs, hs, vs, ys, fids = [], [], [], [], []
     for flight_id in flight_ids:
-        flight = sampled[sampled["flight_id"] == flight_id].reset_index(drop=True)
+        flight = features[features["flight_id"] == flight_id].reset_index(drop=True)
         ep = endpoints[endpoints["flight_id"] == flight_id]
+        # The common 100-step validity mask is fixed before history length is
+        # chosen, so L=25/50/100 always use the same endpoint set.
+        ep = ep[ep["window_valid"]]
         ep = ep[(ep["endpoint_index"] >= window - 1) & (ep["endpoint_index"] < len(flight))]
-        # Shared endpoints are fixed by max_window=100; shorter windows only
-        # change the suffix.  Exclude a common endpoint if any suffix is invalid.
-        keep = []
-        for index in ep["endpoint_index"].to_numpy(dtype=int):
-            if flight["valid"].iloc[index - window + 1:index + 1].all():
-                keep.append(True)
-            else:
-                keep.append(False)
-        ep = ep[np.asarray(keep, dtype=bool)]
         if ep.empty:
             continue
         values = flight[list(ap.FEATURE_COLUMNS)].to_numpy(dtype=np.float32)
@@ -107,7 +164,10 @@ def _train_one(x_train, h_train, v_train, y_train, x_val, h_val, v_val, y_val,
                loss_mode: str, epochs: int = 120, batch_size: int = 128):
     _require_torch()
     import torch
-    from apogee_models import GRUApogeeModel, SnapshotApogeeModel, raw_apogee, raw_apogee_loss, score_state_dict
+    from apogee_models import (
+        GRUApogeeModel, SnapshotApogeeModel, project_apogee,
+        raw_apogee, raw_apogee_loss, score_state_dict,
+    )
 
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -129,7 +189,9 @@ def _train_one(x_train, h_train, v_train, y_train, x_val, h_val, v_val, y_val,
             r = model(xb)[0]
         else:
             r = model(xb[:, -1, :])
-        return r, raw_apogee(hb, vb, r)
+        h_raw = raw_apogee(hb, vb, r)
+        h_proj, _, _ = project_apogee(hb, vb, r)
+        return r, h_raw, h_proj
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5)
@@ -150,19 +212,24 @@ def _train_one(x_train, h_train, v_train, y_train, x_val, h_val, v_val, y_val,
         for start in range(0, len(order), batch_size):
             idx = order[start:start + batch_size]
             optimizer.zero_grad()
-            r, h_pred = forward(train_x[idx], train_h[idx], train_v[idx])
+            r, h_raw, h_proj = forward(train_x[idx], train_h[idx], train_v[idx])
+            target_h = (train_h[idx] + train_v[idx] ** 2 / (2 * 9.81)) * train_y[idx]
             if loss_mode == "raw":
-                loss = raw_apogee_loss(r, train_y[idx], h_pred, (train_h[idx] + train_v[idx] ** 2 / (2 * 9.81)) * train_y[idx])
+                loss = raw_apogee_loss(r, train_y[idx], h_raw, target_h)
             else:
-                loss = torch.mean((h_pred - (train_h[idx] + train_v[idx] ** 2 / (2 * 9.81)) * train_y[idx]) ** 2)
+                # Same r term and height weight; only the height term uses
+                # projection.  This isolates projection from objective changes.
+                loss = torch.mean((r - train_y[idx]) ** 2) + 0.1 * torch.mean(
+                    (h_proj / 100.0 - target_h / 100.0) ** 2
+                )
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
         model.eval()
         with torch.no_grad():
-            r, h_pred = forward(val_x, val_h, val_v)
+            r, h_raw, _ = forward(val_x, val_h, val_v)
             target_h = (val_h + val_v ** 2 / (2 * 9.81)) * val_y
-            val_loss = float(torch.mean((h_pred - target_h) ** 2).item())
+            val_loss = float(raw_apogee_loss(r, val_y, h_raw, target_h).item())
         scheduler.step(val_loss)
         if val_loss < best:
             best = val_loss
@@ -178,6 +245,14 @@ def _train_one(x_train, h_train, v_train, y_train, x_val, h_val, v_val, y_val,
     return model
 
 
+def _target_height(h: np.ndarray, v: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Pure NumPy target used by the evaluator; returns ndarray."""
+    h = np.asarray(h, dtype=np.float64)
+    v = np.asarray(v, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    return (h + v**2 / (2 * 9.81)) * y
+
+
 def _evaluate(model, kind, x, h, v, y):
     _require_torch()
     import torch
@@ -190,58 +265,90 @@ def _evaluate(model, kind, x, h, v, y):
         r = model(xt)[0] if kind == "gru" else model(xt[:, -1, :])
         h_raw = raw_apogee(ht, vt, r)
         h_proj, _, below = project_apogee(ht, vt, r)
-    denom = h + v ** 2 / (2 * 9.81)
-    target = denom * y
+    target = _target_height(h, v, y)
     return {
         "r_raw": r.cpu().numpy(),
         "h_raw": h_raw.cpu().numpy(),
         "h_projected": h_proj.cpu().numpy(),
         "below_current_altitude": below.cpu().numpy(),
-        "target": target.cpu().numpy(),
+        "target": target,
     }
+
+
+def _scale_array(scaler, array: np.ndarray) -> np.ndarray:
+    return scaler.transform(
+        array.reshape(-1, array.shape[-1])
+    ).reshape(array.shape).astype(np.float32)
+
+
+def _save_run_bundle(
+    run_dir: Path,
+    *,
+    model,
+    scaler,
+    config: Mapping,
+) -> None:
+    import joblib
+    import torch
+    from apogee_models import score_state_dict
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+    torch.save(score_state_dict(model.state_dict()), run_dir / "model.pth")
+    joblib.dump(scaler, run_dir / "scaler.pkl")
+    ap.write_json(run_dir / "run.json", config)
 
 
 def _run_learning_curve(args) -> int:
     _require_torch()
-    from sklearn.preprocessing import StandardScaler
-
     data_path = Path(args.data)
     frame = _read_data(data_path)
     flight_ids = np.sort(frame["flight_id"].unique())
     split = _load_split(Path(args.split_manifest) if args.split_manifest else None, flight_ids)
     sampled, endpoints = _resample_and_endpoints(frame)
+    features, endpoints = _prepare_state_contract(sampled, endpoints, args.state_source)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     rows = []
     for window in args.windows:
         val_x, val_h, val_v, val_y, val_f = _samples_for_window(
-            sampled, endpoints, split["validation"], window
+            features, endpoints, split["validation"], window
         )
         for seed in args.seeds:
             shuffled = np.random.RandomState(seed).permutation(split["train"])
             for n_train in args.curve_sizes:
                 selected = sorted(shuffled[:n_train].tolist())
                 train_x, train_h, train_v, train_y, _ = _samples_for_window(
-                    sampled, endpoints, selected, window
+                    features, endpoints, selected, window
                 )
-                scaler = StandardScaler().fit(train_x.reshape(-1, train_x.shape[-1]))
-                def scale(a):
-                    return scaler.transform(a.reshape(-1, a.shape[-1])).reshape(a.shape).astype(np.float32)
+                scaler = _fit_endpoint_scaler(features, endpoints, selected)
                 model = _train_one(
-                    scale(train_x), train_h, train_v, train_y,
-                    scale(val_x), val_h, val_v, val_y,
+                    _scale_array(scaler, train_x), train_h, train_v, train_y,
+                    _scale_array(scaler, val_x), val_h, val_v, val_y,
                     kind="gru", hidden_dim=args.hidden_dim, num_layers=args.num_layers,
                     seed=seed, loss_mode="raw", epochs=args.epochs,
                 )
-                pred = _evaluate(model, "gru", scale(val_x), val_h, val_v, val_y)
+                pred = _evaluate(
+                    model, "gru", _scale_array(scaler, val_x), val_h, val_v, val_y
+                )
                 raw_err = pred["h_raw"] - pred["target"]
-                rows.append({
+                row = {
                     "window": window, "seed": seed, "train_flights": n_train,
                     "n_train_windows": int(len(train_x)), "n_val_windows": int(len(val_x)),
                     "val_flight_mae_raw": _flight_mae(raw_err, val_f),
                     "val_window_mae_raw": float(np.mean(np.abs(raw_err))),
+                }
+                rows.append(row)
+                run_dir = output_dir / "learning_curve" / f"w{window}_n{n_train}_seed{seed}"
+                _save_run_bundle(run_dir, model=model, scaler=scaler, config={
+                    **row, "model": "gru", "features": list(ap.FEATURE_COLUMNS),
+                    "state_source": args.state_source, "loss": "raw",
+                    "acceleration_encoding": "inertial", "scaler_encoding": "inertial",
+                    "dt": 0.02, "stride": 10, "hidden_dim": args.hidden_dim,
+                    "num_layers": args.num_layers, "epochs": args.epochs,
+                    "data": str(data_path), "data_sha256": ap.sha256_file(data_path),
+                    "split": split,
                 })
-                print(json.dumps(rows[-1], ensure_ascii=False))
+                print(json.dumps(row, ensure_ascii=False))
     pd.DataFrame(rows).to_csv(output_dir / "learning_curve.csv", index=False)
     return 0
 
@@ -252,23 +359,11 @@ def _run_benchmark(args) -> int:
     flight_ids = np.sort(frame["flight_id"].unique())
     split = _load_split(Path(args.split_manifest) if args.split_manifest else None, flight_ids)
     sampled, endpoints = _resample_and_endpoints(frame)
-    if args.state_source == "estimated":
-        state = ap.causal_state_estimate(sampled)
-        endpoints = endpoints.merge(
-            state, how="left",
-            left_on=["flight_id", "endpoint_time"], right_on=["flight_id", "time"],
-        )
-        if endpoints["h_est"].isna().any():
-            raise RuntimeError("estimated state missing at an endpoint")
-        endpoints["h"] = endpoints["h_est"]
-        endpoints["v"] = endpoints["v_est"]
-        endpoints["target"] = endpoints["apogee_rel"] / (
-            endpoints["h"] + endpoints["v"] ** 2 / (2 * ap.SIM_G)
-        )
+    features, endpoints = _prepare_state_contract(sampled, endpoints, args.state_source)
     print(f"data={data_path} rows={len(frame)} flights={len(flight_ids)}")
     print(f"split={ {k: len(v) for k, v in split.items()} }")
     for window in args.windows:
-        summary = _dataset_summary(sampled, endpoints, window)
+        summary = _dataset_summary(features, endpoints, window)
         print(f"window={window} endpoints={summary['endpoints']} target={summary['target_min']}..{summary['target_max']}")
     if args.dry_run:
         print(f"features={list(ap.FEATURE_COLUMNS)}")
@@ -280,26 +375,24 @@ def _run_benchmark(args) -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     ap.write_json(output_dir / "split_manifest.json", split)
+    # Fit one scaler on common train endpoints; all history lengths share it.
+    scaler = _fit_endpoint_scaler(features, endpoints, split["train"])
     all_rows = []
     for window in args.windows:
-        train_x, train_h, train_v, train_y, _ = _samples_for_window(sampled, endpoints, split["train"], window)
-        val_x, val_h, val_v, val_y, _ = _samples_for_window(sampled, endpoints, split["validation"], window)
-        test_x, test_h, test_v, test_y, test_f = _samples_for_window(sampled, endpoints, split["test"], window)
+        train_x, train_h, train_v, train_y, _ = _samples_for_window(features, endpoints, split["train"], window)
+        val_x, val_h, val_v, val_y, _ = _samples_for_window(features, endpoints, split["validation"], window)
+        test_x, test_h, test_v, test_y, test_f = _samples_for_window(features, endpoints, split["test"], window)
         if not len(train_x) or not len(test_x):
             raise RuntimeError(f"empty samples for window {window}")
-        # StandardScaler is fit on train endpoints only; this is a local
-        # benchmark scaler and is saved with the run, not in data/simulated.
-        from sklearn.preprocessing import StandardScaler
-        scaler = StandardScaler().fit(train_x.reshape(-1, train_x.shape[-1]))
-        def scale(a):
-            return scaler.transform(a.reshape(-1, a.shape[-1])).reshape(a.shape).astype(np.float32)
-        train_x, val_x, test_x = scale(train_x), scale(val_x), scale(test_x)
+        train_x, val_x, test_x = (
+            _scale_array(scaler, train_x), _scale_array(scaler, val_x), _scale_array(scaler, test_x)
+        )
         for kind in args.models:
             for seed in args.seeds:
                 model = _train_one(
                     train_x, train_h, train_v, train_y, val_x, val_h, val_v, val_y,
                     kind=kind, hidden_dim=args.hidden_dim, num_layers=args.num_layers,
-                    seed=seed, loss_mode=args.loss,
+                    seed=seed, loss_mode=args.loss, epochs=args.epochs,
                 )
                 pred = _evaluate(model, kind, test_x, test_h, test_v, test_y)
                 denom = test_h + test_v ** 2 / (2 * 9.81)
@@ -319,17 +412,35 @@ def _run_benchmark(args) -> int:
                     "below_current_altitude_rate": float(np.mean(pred["below_current_altitude"])),
                 }
                 all_rows.append(row)
+                run_dir = output_dir / f"w{window}_{kind}_h{args.hidden_dim}_l{args.num_layers}_seed{seed}_{args.loss}"
+                _save_run_bundle(run_dir, model=model, scaler=scaler, config={
+                    **row, "features": list(ap.FEATURE_COLUMNS),
+                    "state_source": args.state_source, "loss": args.loss,
+                    "dt": 0.02, "stride": 10, "epochs": args.epochs,
+                    "data": str(data_path), "data_sha256": ap.sha256_file(data_path),
+                    "split": split,
+                })
                 print(json.dumps(row, ensure_ascii=False))
     pd.DataFrame(all_rows).to_csv(output_dir / "benchmark.csv", index=False)
     ap.write_json(output_dir / "run_config.json", {
         "features": list(ap.FEATURE_COLUMNS),
         "state_source": args.state_source,
+        "state_estimator": "causal_acceleration_integration" if args.state_source == "estimated" else "simulation_clean",
+        "acceleration_encoding": "inertial",
+        "scaler_encoding": "inertial",
         "loss": args.loss,
         "windows": args.windows,
         "seeds": args.seeds,
         "models": args.models,
-        "split": split,
+        "hidden_dim": args.hidden_dim,
+        "num_layers": args.num_layers,
+        "epochs": args.epochs,
+        "dt": 0.02,
+        "stride": 10,
         "data": str(data_path),
+        "data_sha256": ap.sha256_file(data_path),
+        "n_common_endpoints": int(endpoints["window_valid"].sum()),
+        "split": split,
         "output_dir": str(output_dir),
     })
     return 0

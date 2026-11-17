@@ -53,6 +53,28 @@ def test_endpoint_manifest_keeps_common_grid_for_all_windows():
     assert len(endpoints) == len(endpoints.drop_duplicates(["flight_id", "endpoint_index"]))
 
 
+def test_target_height_is_numpy():
+    h = np.array([100.0, 120.0])
+    v = np.array([10.0, 5.0])
+    y = np.array([1.0, 0.9])
+    target = bench._target_height(h, v, y)
+    assert isinstance(target, np.ndarray)
+    np.testing.assert_allclose(target, (h + v**2 / (2 * 9.81)) * y)
+
+
+def test_invalid_common_history_excludes_endpoint_for_all_lengths():
+    sampled, _ = _fixture()
+    for fid in (0, 1):
+        idx = sampled.index[sampled["flight_id"] == fid][50]
+        sampled.loc[idx, "valid"] = False
+    endpoints = ap.make_endpoint_manifest(sampled)
+    counts = []
+    for window in (25, 50, 100):
+        x, *_ = bench._samples_for_window(sampled, endpoints, [0, 1], window)
+        counts.append(len(x))
+    assert counts == [0, 0, 0]
+
+
 if __name__ == "__main__":
     tests = [v for k, v in globals().items() if k.startswith("test_") and callable(v)]
     print(f"apogee_benchmark 테스트 {len(tests)}건 실행")

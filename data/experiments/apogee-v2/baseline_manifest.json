@@ -14,7 +14,8 @@
     "gyro_roll_noisy",
     "dynamic_pressure"
   ],
-  "commit": "691ff6f11937081caacc4c0a56d3ca1223c2b6c3",
+  "artifact_source": "git:HEAD@c152ea7",
+  "commit": "c152ea7834d9d43c88c657672b857ef78173cda9",
   "data_sha256": "529186d8787de65957f343d4c7e72a1b70198a16f0fef93d8e654b5b59a46505",
   "dt": 0.02,
   "environment": {
@@ -39,7 +40,14 @@
     "gyro_roll_noisy",
     "dynamic_pressure"
   ],
-  "model_sha256": "960dbd1bde23182d5721b1d866c55a45eb42780ab06ef17ce8027c156594c748",
+  "last_model_sha256": "8975e19eacefe22cf3c950bb6a7f73890ea3bd1916b754ef531341a4926fe465",
+  "model_sha256": "1f5d12de52a1fa149703b494a6d506d3c60936c720a8df059583e52289cc1d9d",
+  "paths": {
+    "data": "data/simulated/all_trajectories.csv.gz",
+    "last_model": "data/simulated/last_gru_model.pth",
+    "model": "data/simulated/best_gru_model.pth",
+    "scaler": "data/simulated/input_scaler.pkl"
+  },
   "scaler_sha256": "0283327378b67d3dfa352a854011fd94d58d844e202ae9b5122fa6866dce471d",
   "schema_version": 1,
   "seed": 42,

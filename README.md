@@ -353,9 +353,10 @@ python main.py --csv data/112.txt
 `below_current_altitude` 비율. 실제 로그 고도는 발사 시점을 0으로 둔 AGL로 변환한다.
 projection까지 보려면 `--show-projected`를 명시한다.
 
-현재 배포 artifact는 legacy specific-force scaler로 학습된 것이므로 CLI 기본
-`--accel-encoding legacy`가 scaler mean을 한 번 이동해 관성가속도 입력과 맞춘다.
-새 bundle을 학습한 뒤에는 `--accel-encoding inertial`으로 전환한다.
+현재 배포 artifact는 legacy specific-force scaler로 학습된 것이므로 metadata에 encoding 표시가
+없으면 CLI가 `legacy_specific_force`로 판정해 scaler mean을 한 번 이동한다. 새 Step 4 artifact는
+`acceleration_encoding='inertial'`을 저장하므로 `--accel-encoding auto`가 그대로 사용한다.
+수동 진단은 `legacy`/`inertial`을 명시할 수 있다.
 
 ### 공통 실험 계약
 
@@ -369,8 +370,10 @@ python scripts/benchmark_apogee.py --dry-run --state-source estimated
 
 - `data/experiments/apogee-v2/split_manifest.json`: train 120 / validation 30 /
   calibration 25 / test 25.
-- `data/experiments/apogee-v2/baseline_manifest.json`: data/model/scaler hash,
-  feature 순서, legacy specific-force artifact encoding, AGL datum, state source.
+- `data/experiments/apogee-v2/baseline_manifest.json`: `HEAD@c152ea7`의
+  best/last/scaler hash, feature 순서, legacy specific-force artifact encoding, AGL datum,
+  state source를 기록한다. 현재 작업 트리 artifact가 다르면 `validate_artifact_hashes`가
+  불일치를 보고한다.
 - benchmark는 `data/experiments/apogee-v2/<run>`에만 쓰며 `data/simulated/` 정본을
   덮어쓰지 않는다.
 - calibration 25비행은 모델 선택·학습에 사용하지 않는다.

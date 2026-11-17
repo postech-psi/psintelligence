@@ -72,12 +72,19 @@ def parse_log(path: Path) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _prepare_scaler(scaler, accel_encoding: str):
-    if accel_encoding == "legacy":
-        return ap.adapt_legacy_scaler_to_inertial(scaler)
-    if accel_encoding == "inertial":
-        return scaler
-    raise SystemExit(f"unsupported acceleration encoding: {accel_encoding}")
+def _prepare_scaler(scaler, accel_encoding: str, metadata: dict | None):
+    if accel_encoding == "auto":
+        encoding = ap.resolve_acceleration_encoding(metadata)
+    elif accel_encoding == "legacy":
+        encoding = "legacy_specific_force"
+    elif accel_encoding == "inertial":
+        encoding = "inertial"
+    else:
+        raise SystemExit(f"unsupported acceleration encoding: {accel_encoding}")
+    try:
+        return ap.prepare_scaler_for_encoding(scaler, encoding), encoding
+    except ap.PipelineError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def main() -> None:
@@ -85,20 +92,36 @@ def main() -> None:
     parser.add_argument("--csv", default="data/112.txt", help="raw flight log")
     parser.add_argument("--model", default="data/simulated/best_gru_model.pth")
     parser.add_argument("--scaler", default="data/simulated/input_scaler.pkl")
+    parser.add_argument("--metadata", default="data/simulated/model_metadata.pkl")
     parser.add_argument("--window", type=int, default=WINDOW)
     parser.add_argument("--show-projected", action="store_true",
                         help="also print max(H_raw, h) diagnostics")
     parser.add_argument(
         "--accel-encoding",
-        choices=["legacy", "inertial"],
-        default="legacy",
-        help="legacy: scaler was fit on specific force; adapt once for inertial input",
+        choices=["auto", "legacy", "inertial"],
+        default="auto",
+        help="auto reads metadata; legacy adapts once; inertial assumes new scaler",
     )
     args = parser.parse_args()
 
+    metadata = joblib.load(args.metadata) if Path(args.metadata).exists() else None
+    if metadata:
+        metadata_features = list(metadata.get("feature_cols", []))
+        if metadata_features and metadata_features not in (
+            list(ap.FEATURE_COLUMNS), list(ap.LEGACY_FEATURE_COLUMNS)
+        ):
+            raise SystemExit("metadata feature_cols do not match a supported contract")
     scaler = joblib.load(args.scaler)
-    scaler = _prepare_scaler(scaler, args.accel_encoding)
-    model = GRUApogeeModel(input_dim=len(ap.FEATURE_COLUMNS))
+    scaler, resolved_encoding = _prepare_scaler(scaler, args.accel_encoding, metadata)
+    hidden_dim = int((metadata or {}).get("hidden_dim", 128))
+    num_layers = int((metadata or {}).get("num_layers", 2))
+    dropout = float((metadata or {}).get("dropout", 0.2))
+    model = GRUApogeeModel(
+        input_dim=len(ap.FEATURE_COLUMNS),
+        hidden_dim=hidden_dim,
+        num_layers=num_layers,
+        dropout=dropout,
+    )
     state = torch.load(args.model, map_location="cpu")
     model.load_legacy_state_dict(state)
     model.eval()
@@ -106,14 +129,19 @@ def main() -> None:
     raw = parse_log(Path(args.csv))
     frame = ap.make_real_features(raw)
     ap.validate_time_order(frame)
+    columns = tuple(dict.fromkeys([*ap.FEATURE_COLUMNS, "altitude_rel"]))
+    frame = ap.resample_causal(frame, columns=columns)
     if len(frame) < args.window:
         raise SystemExit(f"log too short: {len(frame)} rows < window {args.window}")
 
+    endpoints = np.arange(args.window - 1, len(frame), 10, dtype=int)
+    if endpoints.size == 0:
+        raise SystemExit("no complete causal window")
     values = frame[list(ap.FEATURE_COLUMNS)].to_numpy(dtype=np.float32)
-    x = torch.tensor(scaler.transform(values), dtype=torch.float32)
-    x = x.unfold(0, args.window, 1).transpose(-1, -2)
-    h = torch.tensor(frame["altitude_rel"].values[args.window - 1:], dtype=torch.float32)
-    v = torch.tensor(frame["velocity_z"].values[args.window - 1:], dtype=torch.float32)
+    scaled = scaler.transform(values)
+    x = torch.tensor(ap.slice_history(scaled, endpoints, args.window), dtype=torch.float32)
+    h = torch.tensor(frame["altitude_rel"].values[endpoints], dtype=torch.float32)
+    v = torch.tensor(frame["velocity_z"].values[endpoints], dtype=torch.float32)
     denom = validate_physics_inputs(h, v)
 
     with torch.no_grad():

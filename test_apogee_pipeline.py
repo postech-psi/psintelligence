@@ -180,6 +180,50 @@ def test_causal_state_estimate_is_finite_and_causal():
     )
 
 
+def test_baseline_artifact_hash_validation_detects_mutation():
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        data, scaler, model, last = (root / n for n in ("d.bin", "s.bin", "m.bin", "l.bin"))
+        for p, b in ((data, b"d"), (scaler, b"s"), (model, b"m"), (last, b"l")):
+            p.write_bytes(b)
+        split = ap.build_split_manifest(range(200))
+        manifest = ap.build_baseline_manifest(
+            commit="abc", data_path=data, scaler_path=scaler, model_path=model,
+            last_model_path=last, split=split, dt=0.02, window_size=100, stride=10, seed=42,
+        )
+        ap.validate_artifact_hashes(manifest, root=root)
+        model.write_bytes(b"changed")
+        try:
+            ap.validate_artifact_hashes(manifest, root=root)
+        except ap.PipelineError:
+            pass
+        else:
+            raise AssertionError("mutated model must fail hash validation")
+
+
+def test_scaler_cannot_be_adapted_twice():
+    from sklearn.preprocessing import StandardScaler
+    rng = np.random.default_rng(1)
+    x = rng.normal(size=(30, 6))
+    scaler = StandardScaler().fit(x)
+    once = ap.adapt_legacy_scaler_to_inertial(scaler)
+    assert getattr(once, "_psintelligence_accel_encoding") == "inertial"
+    try:
+        ap.adapt_legacy_scaler_to_inertial(once)
+    except ap.PipelineError:
+        pass
+    else:
+        raise AssertionError("double adaptation must fail")
+
+
+def test_encoding_resolution_prefers_explicit_metadata():
+    assert ap.resolve_acceleration_encoding({"acceleration_encoding": "inertial"}) == "inertial"
+    assert ap.resolve_acceleration_encoding({"artifact_acceleration_encoding": "legacy_specific_force"}) == "legacy_specific_force"
+    assert ap.resolve_acceleration_encoding({"feature_cols": ["acceleration_inertial"]}) == "legacy_specific_force"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in globals().items() if k.startswith("test_") and callable(v)]
     print(f"apogee_pipeline 테스트 {len(tests)}건 실행")

@@ -6,6 +6,7 @@ import torch
 from apogee_models import (
     GRUApogeeModel,
     SnapshotApogeeModel,
+    _state_dict_from_physics_wrapper,
     project_apogee,
     raw_apogee,
     raw_apogee_loss,
@@ -16,6 +17,7 @@ from apogee_models import (
 
 def test_gru_returns_raw_ratio_and_keeps_legacy_keys():
     model = GRUApogeeModel(input_dim=6, hidden_dim=8, num_layers=2)
+    model.eval()
     x = torch.randn(3, 100, 6)
     r_raw, _ = model(x)
     assert r_raw.shape == (3,)
@@ -23,13 +25,21 @@ def test_gru_returns_raw_ratio_and_keeps_legacy_keys():
     legacy = {f"gru.{k}": v for k, v in model.state_dict().items()}
     clone = GRUApogeeModel(input_dim=6, hidden_dim=8, num_layers=2)
     clone.load_legacy_state_dict(legacy)
+    clone.eval()
     assert torch.allclose(r_raw, clone(x)[0])
+
+
+def test_bare_state_dict_is_not_mistaken_for_a_wrapper():
+    model = GRUApogeeModel(input_dim=6, hidden_dim=8, num_layers=2)
+    state = model.state_dict()
+    cleaned = _state_dict_from_physics_wrapper(state)
+    assert list(cleaned) == list(state)
 
 
 def test_raw_loss_receives_gradient_when_raw_ratio_is_below_height_floor():
     model = SnapshotApogeeModel(input_dim=6, hidden_dim=8)
     with torch.no_grad():
-        model.net[-1].bias.fill_(-2.0)
+        model.net[-2].bias.fill_(-2.0)
     x = torch.zeros(2, 6)
     h = torch.tensor([100.0, 100.0])
     v = torch.tensor([10.0, 10.0])
@@ -37,6 +47,7 @@ def test_raw_loss_receives_gradient_when_raw_ratio_is_below_height_floor():
     h_target = (h + v**2 / (2 * 9.81)) * r_target
     r_pred = model(x)
     h_pred = raw_apogee(h, v, r_pred)
+    assert torch.all(h_pred < h)
     loss = raw_apogee_loss(r_pred, r_target, h_pred, h_target)
     loss.backward()
     grads = [p.grad for p in model.parameters() if p.grad is not None]

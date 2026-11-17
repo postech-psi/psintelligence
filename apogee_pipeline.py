@@ -58,6 +58,8 @@ MANIFEST_REQUIRED_KEYS = (
     "data_sha256",
     "scaler_sha256",
     "model_sha256",
+    "paths",
+    "artifact_source",
     "features",
     "feature_units",
     "artifact_feature_columns",
@@ -389,13 +391,24 @@ def build_baseline_manifest(
     state_source: str = STATE_SOURCE,
     artifact_feature_columns: Sequence[str] | None = None,
     artifact_acceleration_encoding: str = "inertial",
+    last_model_path: str | Path | None = None,
+    artifact_source: str = "working_tree",
 ) -> dict:
+    last_model_path = Path(last_model_path) if last_model_path else None
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "commit": commit,
         "data_sha256": sha256_file(data_path),
         "scaler_sha256": sha256_file(scaler_path),
         "model_sha256": sha256_file(model_path),
+        "last_model_sha256": sha256_file(last_model_path) if last_model_path else None,
+        "paths": {
+            "data": Path(data_path).as_posix(),
+            "scaler": Path(scaler_path).as_posix(),
+            "model": Path(model_path).as_posix(),
+            "last_model": Path(last_model_path).as_posix() if last_model_path else None,
+        },
+        "artifact_source": artifact_source,
         "features": list(FEATURE_COLUMNS),
         "feature_units": dict(FEATURE_UNITS),
         "artifact_feature_columns": list(artifact_feature_columns or FEATURE_COLUMNS),
@@ -456,17 +469,25 @@ def adapt_legacy_scaler_to_inertial(scaler, *, feature_name: str = "acceleration
     """
     import copy
 
+    if getattr(scaler, "_psintelligence_accel_encoding", None) == "inertial":
+        raise PipelineError("scaler is already inertial; refusing double adaptation")
     adapted = copy.deepcopy(scaler)
     names = getattr(scaler, "feature_names_in_", None)
     if names is not None:
-        if feature_name not in names:
-            raise PipelineError(f"scaler has no feature named {feature_name!r}")
-        index = int(np.where(np.asarray(names) == feature_name)[0][0])
+        names = np.asarray(names)
+        candidates = [feature_name, "acceleration_noisy"]
+        matches = [i for i, name in enumerate(names) if name in candidates]
+        if len(matches) != 1:
+            raise PipelineError(
+                f"scaler must have exactly one acceleration feature, found {matches}"
+            )
+        index = int(matches[0])
     else:
-        # Known legacy order: altitude, velocity, acceleration, tilt, gyro, q.
+        # Known order: altitude, velocity, acceleration, tilt, gyro, q.
         index = 2
     adapted.mean_ = np.asarray(adapted.mean_, dtype=float).copy()
     adapted.mean_[index] -= SIM_G
+    adapted._psintelligence_accel_encoding = "inertial"
     return adapted
 
 
@@ -510,3 +531,59 @@ def causal_state_estimate(
             "v_est": v,
         }))
     return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+
+
+def resolve_acceleration_encoding(metadata: Mapping | None) -> str:
+    """Resolve artifact encoding, defaulting to the known legacy baseline."""
+    if not metadata:
+        return "legacy_specific_force"
+    encoding = metadata.get("acceleration_encoding") or metadata.get("artifact_acceleration_encoding")
+    if encoding in ("inertial", "legacy_specific_force"):
+        return encoding
+    # No explicit marker: current repository baseline is legacy.  Do not infer
+    # from feature names alone, because metadata and scaler can be out of sync.
+    return "legacy_specific_force"
+
+
+def prepare_scaler_for_encoding(scaler, encoding: str):
+    if encoding == "inertial":
+        return scaler
+    if encoding == "legacy_specific_force":
+        return adapt_legacy_scaler_to_inertial(scaler)
+    raise PipelineError(f"unsupported acceleration encoding: {encoding}")
+
+
+def load_scaler_for_contract(
+    scaler_path: str | Path,
+    metadata_path: str | Path | None = None,
+) -> tuple[object, str]:
+    import joblib
+
+    scaler = joblib.load(scaler_path)
+    metadata = joblib.load(metadata_path) if metadata_path and Path(metadata_path).exists() else None
+    encoding = resolve_acceleration_encoding(metadata)
+    return prepare_scaler_for_encoding(scaler, encoding), encoding
+
+
+def validate_artifact_hashes(manifest: Mapping, root: str | Path = ".") -> None:
+    """Verify the files named in a baseline manifest match its hashes."""
+    root = Path(root)
+    paths = manifest.get("paths", {})
+    checks = (
+        ("data", "data_sha256"),
+        ("scaler", "scaler_sha256"),
+        ("model", "model_sha256"),
+        ("last_model", "last_model_sha256"),
+    )
+    for path_key, hash_key in checks:
+        relative = paths.get(path_key)
+        expected = manifest.get(hash_key)
+        if relative is None or expected is None:
+            continue
+        path = Path(relative)
+        if not path.is_absolute():
+            path = root / path
+        if not path.exists():
+            raise PipelineError(f"manifest artifact missing: {path}")
+        if sha256_file(path) != expected:
+            raise PipelineError(f"manifest hash mismatch: {path}")

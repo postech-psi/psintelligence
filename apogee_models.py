@@ -15,11 +15,14 @@ G = 9.81
 
 
 def _state_dict_from_physics_wrapper(state: Mapping[str, torch.Tensor]) -> OrderedDict:
-    """Strip the legacy PhysicsInformedGRU ``gru.`` prefix."""
-    cleaned = OrderedDict()
-    for key, value in state.items():
-        cleaned[key[4:] if key.startswith("gru.") else key] = value
-    return cleaned
+    """Strip only the legacy ``gru.`` wrapper prefix, never bare model keys."""
+    keys = list(state)
+    is_wrapper = bool(keys) and all(
+        key.startswith("gru.gru.") or key.startswith("gru.fc.") for key in keys
+    )
+    if not is_wrapper:
+        return OrderedDict(state)
+    return OrderedDict((key[4:], value) for key, value in state.items())
 
 
 class GRUApogeeModel(nn.Module):
