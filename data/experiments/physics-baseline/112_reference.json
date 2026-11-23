@@ -1,0 +1,15 @@
+{
+  "apogee_observed": false,
+  "coast_samples": 163,
+  "extrapolated_kf_velocity_m": 187.35375559584958,
+  "extrapolated_smoothed_state_m": 187.21958421951385,
+  "final_kf_velocity_mps": 6.46,
+  "final_smoothed_velocity_mps": 6.346255300469562,
+  "k_fit_per_m": 0.0010998748544140098,
+  "legacy_ukf_note": "112 was logged by legacy firmware that fed gravity-free g to a UKF expecting specific force in m/s^2; its logged velocity is biased",
+  "log": "data/112.txt",
+  "note": "observed_max is a lower bound when apogee_observed is false",
+  "observed_max_m": 185.231,
+  "physics_final_m": 187.35375559584958,
+  "physics_smoothed_final_m": 187.21958421951385
+}
