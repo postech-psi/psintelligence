@@ -1,0 +1,11 @@
+split,scenario,windows,ideal_windows,flights,first_windows
+validation,original,546,546,30,30
+validation,low,546,546,30,30
+validation,middle,546,546,30,30
+validation,high,546,546,30,30
+validation,stress,198,546,28,12
+test,original,446,446,25,25
+test,low,446,446,25,25
+test,middle,446,446,25,25
+test,high,446,446,25,25
+test,stress,185,446,23,14

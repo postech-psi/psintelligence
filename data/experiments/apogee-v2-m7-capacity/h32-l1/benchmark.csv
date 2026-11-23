@@ -1,0 +1,2 @@
+window,model,hidden_dim,num_layers,seed,loss,n_test,flight_mae_raw,flight_mae_projected,flight_mae_constant_r,flight_mae_floor_only,window_mae_raw,below_current_altitude_rate
+100,gru,32,1,43,raw,446,1.2567145268982813,1.2334733326012066,10.538413047790527,22.019264221191406,1.2758817372613462,0.0515695067264574

@@ -1,0 +1,97 @@
+{
+  "accel_trigger_time_s": 555.53,
+  "apogee_observed": false,
+  "first_time_s": 550.76,
+  "last_logged_kf_velocity_mps": 5.732,
+  "last_observed_baro_rel_m": 185.08,
+  "last_time_s": 562.13,
+  "launch_state_time_s": 555.86,
+  "log_sha256": "b1c49b3c103843c179f2aa9a669d710d756d781c8d732629f3aada9e9f539f99",
+  "max_observed_baro_rel_m": 185.08,
+  "modes": {
+    "every_logged_row": {
+      "final_kf_alt": 185.084625,
+      "final_kf_vz": null,
+      "flight_predicted": 31,
+      "flight_scheduled": 33,
+      "last_1s_predicted": 5,
+      "last_1s_scheduled": 5,
+      "last_prediction_s_before_end": 0.1899999999999995,
+      "offered_bmp_rows": 598,
+      "predictions": {
+        "old_gru_42": {
+          "below_current_ukf": 0,
+          "below_logged_max": 0,
+          "last": 188.23599243164062,
+          "max": 189.17080688476562,
+          "min": 187.24853515625
+        },
+        "old_gru_43": {
+          "below_current_ukf": 0,
+          "below_logged_max": 0,
+          "last": 188.65382385253906,
+          "max": 189.34091186523438,
+          "min": 187.64926147460938
+        },
+        "retrained_gru_42": {
+          "below_current_ukf": 0,
+          "below_logged_max": 0,
+          "last": 188.05764770507812,
+          "max": 189.8555450439453,
+          "min": 187.32276916503906
+        },
+        "retrained_gru_43": {
+          "below_current_ukf": 0,
+          "below_logged_max": 0,
+          "last": 188.17840576171875,
+          "max": 189.5753936767578,
+          "min": 187.49244689941406
+        }
+      },
+      "valid_ukf_rows": 566
+    },
+    "pressure_change_proxy": {
+      "final_kf_alt": 185.045471,
+      "final_kf_vz": null,
+      "flight_predicted": 19,
+      "flight_scheduled": 33,
+      "last_1s_predicted": 5,
+      "last_1s_scheduled": 5,
+      "last_prediction_s_before_end": 0.1899999999999995,
+      "offered_bmp_rows": 305,
+      "predictions": {
+        "old_gru_42": {
+          "below_current_ukf": 0,
+          "below_logged_max": 0,
+          "last": 188.20956420898438,
+          "max": 189.15997314453125,
+          "min": 187.29196166992188
+        },
+        "old_gru_43": {
+          "below_current_ukf": 0,
+          "below_logged_max": 0,
+          "last": 188.6302032470703,
+          "max": 189.2984161376953,
+          "min": 187.70657348632812
+        },
+        "retrained_gru_42": {
+          "below_current_ukf": 0,
+          "below_logged_max": 0,
+          "last": 188.0803985595703,
+          "max": 189.83953857421875,
+          "min": 187.42994689941406
+        },
+        "retrained_gru_43": {
+          "below_current_ukf": 0,
+          "below_logged_max": 0,
+          "last": 188.1764373779297,
+          "max": 189.5071563720703,
+          "min": 187.521240234375
+        }
+      },
+      "valid_ukf_rows": 309
+    }
+  },
+  "pad_zero_m": 1.23,
+  "rows": 598
+}
