@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
+from io import StringIO
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -85,6 +87,97 @@ def _prepare_state_contract(
     return features, head_endpoints
 
 
+def _grid_with_m7_state(frame: pd.DataFrame, replay: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    # Keep the noisy barometer channel separate from the filter's altitude.
+    features = frame[["flight_id", "acceleration_inertial", "tilt_angle",
+                      "gyro_roll_noisy", "apogee_rel"]].copy()
+    features["time"] = replay["time_us"].to_numpy() / 1_000_000
+    features["altitude_noisy_rel"] = replay["baro_alt"].to_numpy()
+    features["altitude_rel"] = replay["kf_alt"].to_numpy()
+    features["velocity_z"] = replay["kf_vz"].to_numpy()
+    features["dynamic_pressure"] = ap._relative_dynamic_pressure(
+        features["altitude_rel"], features["velocity_z"]
+    )
+    features["ukf_valid"] = (replay["valid"].to_numpy() == 1) & np.isfinite(
+        features[[*ap.FEATURE_COLUMNS, "altitude_rel"]].to_numpy()
+    ).all(axis=1)
+    denom = (features["altitude_rel"] + features["velocity_z"] ** 2 / (2 * ap.SIM_G)).to_numpy()
+    features["energy_ratio_rel"] = np.divide(
+        features["apogee_rel"].to_numpy(), denom,
+        out=np.full(len(features), np.nan),
+        where=features["ukf_valid"].to_numpy() & (denom > 1e-9),
+    )
+
+    # Replay before resampling. A held grid row is not a new barometer update.
+    sampled = ap.resample_causal(features, columns=(
+        *ap.FEATURE_COLUMNS, "altitude_rel", "energy_ratio_rel", "apogee_rel", "ukf_valid",
+    ))
+    sampled["valid"] &= sampled.pop("ukf_valid")
+    endpoints = ap.make_endpoint_manifest(sampled)
+    if not endpoints.empty:
+        endpoints = endpoints.loc[np.isfinite(endpoints["target"])].reset_index(drop=True)
+    return sampled, endpoints
+
+
+def _run_ukf_replay(events: pd.DataFrame, baro_alt, executable: Path) -> pd.DataFrame:
+    # An empty barometer cell means no new observation at this event.
+    sensor_rows = pd.DataFrame({
+        "flight_id": events["flight_id"],
+        "time_us": np.rint(events["time"].to_numpy() * 1_000_000).astype(np.int64),
+        "accel_z_g": events["acceleration_inertial"] / ap.LOG_G,
+        "baro_alt": baro_alt,
+    })
+    try:
+        result = subprocess.run(
+            [str(executable.resolve())], input=sensor_rows.to_csv(index=False, lineterminator="\n"),
+            encoding="utf-8", capture_output=True, check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"ukf_replay failed: {exc.stderr.strip()}") from exc
+    replay = pd.read_csv(StringIO(result.stdout))
+    expected = ["flight_id", "time_us", "baro_alt", "kf_alt", "kf_vz", "valid"]
+    if (list(replay.columns) != expected or not np.array_equal(
+            replay[expected[:2]].to_numpy(), sensor_rows[expected[:2]].to_numpy())):
+        raise RuntimeError("ukf_replay output does not match the sensor rows")
+    return replay
+
+
+def _benchmark_inputs(frame: pd.DataFrame, args) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if args.state_source != "m7_ukf":
+        return _prepare_state_contract(*_resample_and_endpoints(frame), args.state_source)
+
+    ordered = frame.sort_values(["flight_id", "time"]).reset_index(drop=True)
+    replay = _run_ukf_replay(ordered, ordered["altitude_noisy_rel"], args.ukf_replay)
+    sampled, endpoints = _grid_with_m7_state(ordered, replay)
+    if endpoints.empty or not endpoints["window_valid"].any():
+        raise RuntimeError("M7 UKF replay produced no valid common windows")
+    return sampled, endpoints
+
+
+def _select_endpoints(frame: pd.DataFrame, endpoints: pd.DataFrame, phase: str) -> pd.DataFrame:
+    if phase == "all":
+        return endpoints
+    # Only the prediction instant is filtered. Earlier observations, including
+    # powered ascent, remain available to construct each causal history.
+    phase_grid = ap.resample_causal(frame, columns=("flight_phase",))
+    coast = phase_grid.loc[
+        phase_grid["valid"] & phase_grid["flight_phase"].eq("coasting"), ["flight_id", "time"],
+    ].rename(columns={"time": "endpoint_time"})
+    return endpoints.merge(coast, on=["flight_id", "endpoint_time"],
+                           how="inner", validate="one_to_one")
+
+
+def _state_metadata(args) -> dict:
+    estimator = {"simulation_clean": "simulation_clean",
+                 "estimated": "causal_acceleration_integration",
+                 "m7_ukf": "m7_variable_dt_ukf"}[args.state_source]
+    metadata = {"state_source": args.state_source, "state_estimator": estimator}
+    metadata["endpoint_phase"] = args.endpoint_phase
+    if args.state_source == "m7_ukf":
+        metadata["ukf_replay_sha256"] = ap.sha256_file(args.ukf_replay)
+    return metadata
+
+
 def _fit_endpoint_scaler(
     features: pd.DataFrame,
     endpoints: pd.DataFrame,
@@ -142,13 +235,15 @@ def _flight_mae(errors: np.ndarray, fids: np.ndarray) -> float:
 
 
 def _dataset_summary(frame: pd.DataFrame, endpoints: pd.DataFrame, window: int) -> dict:
+    valid = endpoints.loc[endpoints["window_valid"]] if len(endpoints) else endpoints
     return {
         "rows": int(len(frame)),
         "flights": int(frame["flight_id"].nunique()),
         "endpoints": int(len(endpoints)),
+        "valid_endpoints": int(len(valid)),
         "window": window,
-        "target_min": float(endpoints["target"].min()) if len(endpoints) else None,
-        "target_max": float(endpoints["target"].max()) if len(endpoints) else None,
+        "target_min": float(valid["target"].min()) if len(valid) else None,
+        "target_max": float(valid["target"].max()) if len(valid) else None,
     }
 
 
@@ -161,7 +256,8 @@ def _require_torch():
 
 def _train_one(x_train, h_train, v_train, y_train, x_val, h_val, v_val, y_val,
                *, kind: str, hidden_dim: int, num_layers: int, seed: int,
-               loss_mode: str, epochs: int = 120, batch_size: int = 128):
+               loss_mode: str, epochs: int = 120, batch_size: int = 128,
+               history: list[dict] | None = None, val_apex_mask=None):
     _require_torch()
     import torch
     from apogee_models import (
@@ -203,10 +299,17 @@ def _train_one(x_train, h_train, v_train, y_train, x_val, h_val, v_val, y_val,
     val_h = torch.tensor(h_val, dtype=torch.float32, device=device)
     val_v = torch.tensor(v_val, dtype=torch.float32, device=device)
     val_y = torch.tensor(y_val, dtype=torch.float32, device=device)
+    if history is not None:
+        apex_mask = torch.as_tensor(val_apex_mask, dtype=torch.bool, device=device)
+        if apex_mask.shape != val_h.shape or not apex_mask.any():
+            raise ValueError("epoch tracing requires a nonempty last-1s validation mask")
     best = float("inf")
     best_state = None
     patience = 0
-    for _ in range(epochs):
+    for epoch in range(1, epochs + 1):
+        if history is not None:
+            train_loss_sum = train_h.new_zeros(())
+            lr = optimizer.param_groups[0]["lr"]
         model.train()
         order = torch.randperm(len(train_x), device=device)
         for start in range(0, len(order), batch_size):
@@ -225,6 +328,8 @@ def _train_one(x_train, h_train, v_train, y_train, x_val, h_val, v_val, y_val,
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
+            if history is not None:
+                train_loss_sum += loss.detach() * len(idx)
         model.eval()
         with torch.no_grad():
             r, h_raw, _ = forward(val_x, val_h, val_v)
@@ -237,8 +342,18 @@ def _train_one(x_train, h_train, v_train, y_train, x_val, h_val, v_val, y_val,
             patience = 0
         else:
             patience += 1
+        if history is None:
             if patience >= 12:
                 break
+        else:
+            history.append({
+                "epoch": epoch,
+                "train_loss": float(train_loss_sum.item()) / len(train_x),
+                "validation_loss": val_loss,
+                "learning_rate": lr,
+                "apex_last_1s_mae_m": float((h_raw[apex_mask] - target_h[apex_mask]).abs().mean().item()),
+                "epochs_since_best": patience,
+            })
     if best_state is not None:
         model.load_state_dict(best_state)
     model.eval()
@@ -304,21 +419,22 @@ def _run_learning_curve(args) -> int:
     frame = _read_data(data_path)
     flight_ids = np.sort(frame["flight_id"].unique())
     split = _load_split(Path(args.split_manifest) if args.split_manifest else None, flight_ids)
-    sampled, endpoints = _resample_and_endpoints(frame)
-    features, endpoints = _prepare_state_contract(sampled, endpoints, args.state_source)
+    features, endpoints = _benchmark_inputs(frame, args)
+    selected_endpoints = _select_endpoints(frame, endpoints, args.endpoint_phase)
+    state_metadata = _state_metadata(args)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     rows = []
     for window in args.windows:
         val_x, val_h, val_v, val_y, val_f = _samples_for_window(
-            features, endpoints, split["validation"], window
+            features, selected_endpoints, split["validation"], window
         )
         for seed in args.seeds:
             shuffled = np.random.RandomState(seed).permutation(split["train"])
             for n_train in args.curve_sizes:
                 selected = sorted(shuffled[:n_train].tolist())
                 train_x, train_h, train_v, train_y, _ = _samples_for_window(
-                    features, endpoints, selected, window
+                    features, selected_endpoints, selected, window
                 )
                 scaler = _fit_endpoint_scaler(features, endpoints, selected)
                 model = _train_one(
@@ -341,7 +457,7 @@ def _run_learning_curve(args) -> int:
                 run_dir = output_dir / "learning_curve" / f"w{window}_n{n_train}_seed{seed}"
                 _save_run_bundle(run_dir, model=model, scaler=scaler, config={
                     **row, "model": "gru", "features": list(ap.FEATURE_COLUMNS),
-                    "state_source": args.state_source, "loss": "raw",
+                    **state_metadata, "loss": "raw",
                     "acceleration_encoding": "inertial", "scaler_encoding": "inertial",
                     "dt": 0.02, "stride": 10, "hidden_dim": args.hidden_dim,
                     "num_layers": args.num_layers, "epochs": args.epochs,
@@ -358,32 +474,38 @@ def _run_benchmark(args) -> int:
     frame = _read_data(data_path)
     flight_ids = np.sort(frame["flight_id"].unique())
     split = _load_split(Path(args.split_manifest) if args.split_manifest else None, flight_ids)
-    sampled, endpoints = _resample_and_endpoints(frame)
-    features, endpoints = _prepare_state_contract(sampled, endpoints, args.state_source)
+    features, endpoints = _benchmark_inputs(frame, args)
+    selected_endpoints = _select_endpoints(frame, endpoints, args.endpoint_phase)
     print(f"data={data_path} rows={len(frame)} flights={len(flight_ids)}")
     print(f"split={ {k: len(v) for k, v in split.items()} }")
     for window in args.windows:
-        summary = _dataset_summary(features, endpoints, window)
-        print(f"window={window} endpoints={summary['endpoints']} target={summary['target_min']}..{summary['target_max']}")
+        summary = _dataset_summary(features, selected_endpoints, window)
+        print(f"window={window} valid_endpoints={summary['valid_endpoints']}/{summary['endpoints']} "
+              f"target={summary['target_min']}..{summary['target_max']}")
     if args.dry_run:
         print(f"features={list(ap.FEATURE_COLUMNS)}")
-        print(f"state_source={args.state_source} loss={args.loss} output_dir={args.output_dir}")
+        print(f"state_source={args.state_source} endpoint_phase={args.endpoint_phase} "
+              f"loss={args.loss} output_dir={args.output_dir}")
         print("dry-run: no torch import, no files written")
         return 0
 
     _require_torch()
+    state_metadata = _state_metadata(args)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     ap.write_json(output_dir / "split_manifest.json", split)
-    # Fit one scaler on common train endpoints; all history lengths share it.
+    # Hold normalization fixed when comparing endpoint phases; train flights only.
     scaler = _fit_endpoint_scaler(features, endpoints, split["train"])
     all_rows = []
     for window in args.windows:
-        train_x, train_h, train_v, train_y, _ = _samples_for_window(features, endpoints, split["train"], window)
-        val_x, val_h, val_v, val_y, _ = _samples_for_window(features, endpoints, split["validation"], window)
-        test_x, test_h, test_v, test_y, test_f = _samples_for_window(features, endpoints, split["test"], window)
-        if not len(train_x) or not len(test_x):
-            raise RuntimeError(f"empty samples for window {window}")
+        train_x, train_h, train_v, train_y, _ = _samples_for_window(
+            features, selected_endpoints, split["train"], window)
+        val_x, val_h, val_v, val_y, _ = _samples_for_window(
+            features, selected_endpoints, split["validation"], window)
+        test_x, test_h, test_v, test_y, test_f = _samples_for_window(
+            features, selected_endpoints, split["test"], window)
+        if not len(train_x) or not len(val_x) or not len(test_x):
+            raise RuntimeError(f"empty train, validation, or test samples for window {window}")
         train_x, val_x, test_x = (
             _scale_array(scaler, train_x), _scale_array(scaler, val_x), _scale_array(scaler, test_x)
         )
@@ -415,7 +537,7 @@ def _run_benchmark(args) -> int:
                 run_dir = output_dir / f"w{window}_{kind}_h{args.hidden_dim}_l{args.num_layers}_seed{seed}_{args.loss}"
                 _save_run_bundle(run_dir, model=model, scaler=scaler, config={
                     **row, "features": list(ap.FEATURE_COLUMNS),
-                    "state_source": args.state_source, "loss": args.loss,
+                    **state_metadata, "loss": args.loss,
                     "dt": 0.02, "stride": 10, "epochs": args.epochs,
                     "data": str(data_path), "data_sha256": ap.sha256_file(data_path),
                     "split": split,
@@ -424,8 +546,7 @@ def _run_benchmark(args) -> int:
     pd.DataFrame(all_rows).to_csv(output_dir / "benchmark.csv", index=False)
     ap.write_json(output_dir / "run_config.json", {
         "features": list(ap.FEATURE_COLUMNS),
-        "state_source": args.state_source,
-        "state_estimator": "causal_acceleration_integration" if args.state_source == "estimated" else "simulation_clean",
+        **state_metadata,
         "acceleration_encoding": "inertial",
         "scaler_encoding": "inertial",
         "loss": args.loss,
@@ -439,7 +560,7 @@ def _run_benchmark(args) -> int:
         "stride": 10,
         "data": str(data_path),
         "data_sha256": ap.sha256_file(data_path),
-        "n_common_endpoints": int(endpoints["window_valid"].sum()),
+        "n_common_endpoints": int(selected_endpoints["window_valid"].sum()) if len(selected_endpoints) else 0,
         "split": split,
         "output_dir": str(output_dir),
     })
@@ -450,19 +571,33 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", default="data/simulated/all_trajectories.csv.gz")
     parser.add_argument("--split-manifest")
-    parser.add_argument("--output-dir", default="data/experiments/apogee-v2")
+    parser.add_argument("--output-dir", help="default: data/experiments/apogee-v2[-m7-ukf][-coasting]")
     parser.add_argument("--windows", type=int, nargs="+", default=[25, 50, 100])
     parser.add_argument("--models", nargs="+", choices=["gru", "mlp"], default=["gru", "mlp"])
     parser.add_argument("--hidden-dim", type=int, default=32)
     parser.add_argument("--num-layers", type=int, default=1)
     parser.add_argument("--seeds", type=int, nargs="+", default=[42])
     parser.add_argument("--loss", choices=["raw", "projected"], default="raw")
-    parser.add_argument("--state-source", choices=["simulation_clean", "estimated"], default="simulation_clean")
+    parser.add_argument("--state-source", choices=["simulation_clean", "estimated", "m7_ukf"],
+                        default="simulation_clean")
+    parser.add_argument("--ukf-replay", type=Path, help="host ukf_replay executable for m7_ukf")
+    parser.add_argument("--endpoint-phase", choices=["all", "coasting"], default="all",
+                        help="filter prediction instants for train/validation/test, not history")
     parser.add_argument("--learning-curve", action="store_true")
     parser.add_argument("--curve-sizes", type=int, nargs="+", default=[30, 60, 120])
     parser.add_argument("--epochs", type=int, default=120)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+    if args.state_source == "m7_ukf":
+        if args.ukf_replay is None or not args.ukf_replay.is_file():
+            parser.error("m7_ukf requires --ukf-replay pointing to the host executable")
+    elif args.ukf_replay is not None:
+        parser.error("--ukf-replay requires --state-source m7_ukf")
+    if args.output_dir is None:
+        suffix = "-m7-ukf" if args.state_source == "m7_ukf" else ""
+        if args.endpoint_phase == "coasting":
+            suffix += "-coasting"
+        args.output_dir = f"data/experiments/apogee-v2{suffix}"
     if args.learning_curve and not args.dry_run:
         raise SystemExit(_run_learning_curve(args))
     raise SystemExit(_run_benchmark(args))
