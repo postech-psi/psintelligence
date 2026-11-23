@@ -1,0 +1,21 @@
+--- ukf.cpp
++++ ukf_sim_r.cpp
+@@ -278,13 +278,14 @@
+     diff_idx_0 = 0.0 * ssq + P_minus_0;
+     accumulatedData = 0.0 * P_minus_1 + propagated_points;
+     x_hat = accumulatedData * 0.0 + diff_idx_0;
+-    diff_idx_0 /= x_hat + 0.0217839917878801;
+-    diff_idx_1 = accumulatedData / (x_hat + 0.0217839917878801);
++    const real_T innovationVariance = x_hat + 2.25;  // Step 1.5 nominal 1.5 m sigma
++    diff_idx_0 /= innovationVariance;
++    diff_idx_1 = accumulatedData / innovationVariance;
+     accumulatedData = rtU.baro_altitude_in - (0.0 * rtDW.x_hat[1] + rtDW.x_hat[0]);
+     rtDW.x_hat[0] += diff_idx_0 * accumulatedData;
+-    Wc_0 = (x_hat + 0.0217839917878801) * diff_idx_0;
++    Wc_0 = innovationVariance * diff_idx_0;
+     rtDW.P_a[0] = P_minus_0 - Wc_0 * diff_idx_0;
+-    x_hat = (x_hat + 0.0217839917878801) * diff_idx_1;
++    x_hat = innovationVariance * diff_idx_1;
+     rtDW.P_a[1] = ssq - x_hat * diff_idx_0;
+     rtDW.x_hat[1] += diff_idx_1 * accumulatedData;
+     rtDW.P_a[2] = propagated_points - Wc_0 * diff_idx_1;

@@ -1,0 +1,6 @@
+profile,flights,eligible_150_history_windows,eligible_last_1s,valid_but_history_rejected
+low,120,1950,600,240
+middle,120,1950,600,240
+high,120,1950,600,240
+noisy_burst_2,101,1195,376,870
+noisy_burst_3,92,892,258,1021

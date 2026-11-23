@@ -1,0 +1,27 @@
+{
+  "best_epochs": {
+    "A0_ukf_seed42": 70,
+    "A0_ukf_seed43": 61,
+    "A1_smoothed_seed42": 35,
+    "A1_smoothed_seed43": 14,
+    "A2_ukf_smoothed_seed42": 15,
+    "A2_ukf_smoothed_seed43": 31
+  },
+  "data_sha256": "529186d8787de65957f343d4c7e72a1b70198a16f0fef93d8e654b5b59a46505",
+  "endpoint_rule": "flight_phase coasting & 100-step window valid & physics defined & all features finite",
+  "epochs": 120,
+  "n_common_endpoints": 3648,
+  "seeds": [
+    42,
+    43
+  ],
+  "split": "data/experiments/apogee-v2/split_manifest.json",
+  "ukf_replay_sha256": "89f92e3262953daf3bb0b159f986217d98f7815ff838e1f5023ec43f8a502119",
+  "variants": [
+    "A0_ukf",
+    "A1_smoothed",
+    "A2_ukf_smoothed",
+    "B0_physics"
+  ],
+  "window": 100
+}

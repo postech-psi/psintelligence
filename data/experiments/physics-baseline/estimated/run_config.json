@@ -1,0 +1,16 @@
+{
+  "checkpoint": "data/simulated/best_gru_model.pth",
+  "checkpoint_sha256": "e9c3afd1056421ff3a9208c83dff350425ca4e2318596eac76d4363baf5e4ba6",
+  "coast_config": {
+    "accel_threshold": -9.3195,
+    "confirm_samples": 5,
+    "fit_window_s": null,
+    "gravity": 9.81,
+    "settle_s": 0.5,
+    "v_min": 5.0
+  },
+  "data_sha256": "529186d8787de65957f343d4c7e72a1b70198a16f0fef93d8e654b5b59a46505",
+  "matched_rule": "endpoints where every compared model is defined (coast only)",
+  "split": "data/experiments/apogee-v2/split_manifest.json",
+  "state_source": "estimated"
+}

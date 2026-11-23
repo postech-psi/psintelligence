@@ -1,0 +1,11 @@
+{
+  "burst_samples": 4,
+  "burst_start_probability": 0.007,
+  "scenario": {
+    "drop_probability": 0.0,
+    "latency_us": 60000,
+    "poll_jitter": true,
+    "sigma_m": 1.5
+  },
+  "seed": 11400
+}

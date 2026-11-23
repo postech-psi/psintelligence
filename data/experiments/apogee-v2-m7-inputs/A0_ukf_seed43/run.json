@@ -1,0 +1,36 @@
+{
+  "best_epoch": 61,
+  "coast_config": {
+    "accel_threshold": -9.3195,
+    "confirm_samples": 5,
+    "fit_window_s": null,
+    "gravity": 9.81,
+    "settle_s": 0.5,
+    "v_min": 5.0
+  },
+  "data_sha256": "529186d8787de65957f343d4c7e72a1b70198a16f0fef93d8e654b5b59a46505",
+  "epochs": 120,
+  "features": [
+    "altitude_noisy_rel",
+    "velocity_z",
+    "acceleration_inertial",
+    "tilt_angle",
+    "gyro_roll_noisy",
+    "dynamic_pressure"
+  ],
+  "head_h": "altitude_rel",
+  "head_v": "velocity_z",
+  "hidden_dim": 32,
+  "n_test": 446,
+  "n_train": 2197,
+  "n_validation": 547,
+  "num_layers": 1,
+  "residual": false,
+  "residual_scale_m": null,
+  "seed": 43,
+  "smoother_window_s": 1.5,
+  "state_source": "m7_ukf",
+  "ukf_replay_sha256": "89f92e3262953daf3bb0b159f986217d98f7815ff838e1f5023ec43f8a502119",
+  "variant": "A0_ukf",
+  "window": 100
+}

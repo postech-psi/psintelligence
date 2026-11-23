@@ -150,6 +150,145 @@ RocketPy 없이 Step 2~6 을 실행할 수 있습니다(데이터를 직접 재�
 - Chung et al. (2014). *Empirical Evaluation of Gated Recurrent Neural Networks*. arXiv:1412.3555.
 - Gers et al. (2000). *Learning to Forget: Continual Prediction with LSTM*. Neural Computation.
 
+#### M7 UKF 추정치로 학습
+
+Avionics의 `flight-computer/README.md` §6.5에 따라 호스트용 `ukf_replay`를
+빌드한 뒤 아래처럼 시뮬레이션 관측을 재생한다 (Windows 경로 예시).
+
+```bash
+python scripts/benchmark_apogee.py --state-source m7_ukf --ukf-replay ../../Avionics/flight-computer/.pio/tools/ukf_replay.exe --split-manifest data/experiments/apogee-v2/split_manifest.json --windows 100 --models gru --dry-run
+```
+
+`--dry-run`을 빼면 32유닛·1층 GRU를 학습한다. 기본 출력은
+`data/experiments/apogee-v2-m7-ukf/`이며, 결과에 리플레이 실행 파일의 SHA-256을
+기록한다. 기존 clean/estimated 결과 디렉터리와는 분리된다.
+
+20 ms 격자로 맞추기 **전에** 센서 관측을 리플레이한다. 피처의 고도는 기압값,
+속도·동압·물리 헤드 상태는 UKF 결과를 사용한다. 정답 아포지는 라벨로만
+사용하며, 입력이 무효한 구간은 시간을 압축하지 않고 해당 창을 제외한다.
+추정 상태로 재계산한 `r`이 0.5–1.5를 벗어나더라도 라벨을 자르지 않는다.
+이 경로는 시뮬레이션 추정치로 학습할 수 있게 한 것이며, 센서 장착 방향·실제
+센서 도착 지연·실기 아포지 정확도는 검증하지 않는다.
+
+코스팅 예측만 비교하려면 위 명령에서 `--dry-run`을 빼고
+`--endpoint-phase coasting --models gru mlp`를 지정한다. 학습·검증·시험의
+예측 시점만 `flight_phase=coasting`으로 제한한다. 각 100스텝 창 안의
+연소 이력은 유지하고, 정규화도 전체 구간 모델과 같은 train 비행에 맞춘다.
+결과는 `data/experiments/apogee-v2-m7-ukf-coasting/`에 분리 저장된다.
+`flight_phase`는 시뮬레이션 실험용 필터이며 모델 입력이나 온보드 실행
+조건은 아니다.
+
+동일 분할·스케일러와 seed 42에서 코스팅 전용 GRU의 시험 창 MAE는
+1.18 m, 전체 구간 학습 GRU는 1.35 m, 코스팅 전용 snapshot MLP는
+5.77 m였다. 첫 코스팅 예측 MAE는 시험에서 2.82 → 2.71 m였지만
+검증에서 1.79 → 2.74 m로 악화됐다. 이 1회 비교로 코스팅 진입 직후의
+개선이 재현됐다고 볼 수 없으므로 기존 후보를 교체하지 않는다.
+
+#### 기압 관측 모델 민감도 실험
+
+`112.txt`의 정지 기압고도 잔차(표준편차 0.0612 m, 인접 상관 약 0.83)는
+정지 입력의 기준으로만 사용한다. 움직이기 시작한 뒤의 표준편차 0.12 / 0.35 /
+0.75 m와 기본 지연 10 / 20 / 30 ms는 민감도 실험 가정이다. 지연에 10 ms
+폴링 위상을 더해 실제 UKF에 도착 시각으로 공급한다. 1.5 m / 40 ms /
+1.5% 누락 조건은 학습에서 제외한다. IMU 관측 시각과 UKF의 `R`은 바꾸지 않는다.
+텍스트 로그의 반복값만으로 BMP 갱신이나 운용 중 지연을 역산하지 않는다.
+
+```bash
+python scripts/benchmark_baro_replay.py \
+  --ukf-replay ../../Avionics/flight-computer/.pio/tools/ukf_replay.exe \
+  --baseline-42 data/experiments/apogee-v2-m7-ukf-coasting/w100_gru_h32_l1_seed42_raw \
+  --baseline-43 data/experiments/apogee-v2-m7-capacity/h32-l1/w100_gru_h32_l1_seed43_raw \
+  --output-dir data/experiments/apogee-v2-m7-baro-replay
+```
+
+32유닛·1층·100스텝 모델을 같은 비행 분할에서 학습한다. 세 조건의 훈련
+코스팅 끝점으로 새 스케일러를 맞추고, 기존 모델과 새 모델을 각 조건의
+동일한 창에서 비교한다. `coverage.csv`는 아예 예측할 수 없는 창을 따로 센다.
+`112.txt`는 정점 전에 끊기므로 실기 아포지 정확도의 검증 자료로 사용하지 않는다.
+
+시드 42·43 평균, 시험 25편의 아포지 직전 1초 MAE는 기존 대비 저잡음
+0.46 → 0.27 m, 중간 0.51 → 0.42 m, 고잡음 0.69 → 0.76 m였다.
+스트레스에서는 1.83 → 1.96 m로 악화했고, 직전 1초에 예측이 가능했던
+비행도 25편 중 15편뿐이었다. 두 모델의 성능은 각 조건에서 동일한
+유효 창끼리 비교했다. 혼합 학습 모델은 실기 로그로 검증하기 전까지
+기존 모델을 교체하지 않는다.
+
+#### GRU 입력 창 길이 비교
+
+```bash
+python scripts/benchmark_window_replay.py \
+  --ukf-replay ../../Avionics/flight-computer/.pio/tools/ukf_replay.exe \
+  --output-dir data/experiments/apogee-v2-m7-windows
+```
+
+센서 조건·비행 분할·정규화와 200 ms 예측 시점을 고정한다. 32유닛 1층 GRU를
+50·100·150스텝으로 각각 두 시드에 학습한다. 훈련과 검증에는 150스텝까지
+유효한 같은 시점을 사용하며, 짧은 모델에는 그 창의 끝부분만 준다. 평가는
+세 모델 공통 시점에서 오류를 비교하고, 각 길이가 낼 수 있었던 모든 예측은
+`coverage.csv`에 별도로 센다. 같은 시점의 현재 UKF 고도와 양의 수직속도만
+반영한 탄도 예측도 `matched_comparison.csv`에서 확인할 수 있다.
+
+별도 민감도 비교에서 중간 조건(0.35 m, 기본 지연 20 ms)을 기준으로
+한 항목씩 바꿨다. 아포지 직전 1초의 UKF 수직속도 MAE는 기압 잡음만
+0.12 → 0.35 → 0.75 m로 높일 때 0.68 → 1.96 → 4.21 m/s였다.
+누락률만 1.5%로 바꾸면 100스텝 기준 유효 창은 125 → 46개로 줄었다.
+누락 조건의 오차는 남은 창에서만 계산하므로 기준 조건과 직접 비교하지 않는다.
+
+시험 결과는 100스텝을 기본 후보로 유지하는 쪽이다. 중간 조건의
+아포지 0.5–2초 전 MAE는 50/100/150스텝에서 0.72/0.56/0.59 m였고,
+탄도·현재고도 기준선은 각각 2.42/8.99 m였다. 스트레스 조건에서 아포지
+직전 1초에 예측한 비행은 각각 22/15/9편(전체 25편)이었다. 50스텝은
+누락 복구 후보지만 스트레스에서 100스텝과 공유하는 48개 창의 MAE는
+2.30 m로 100스텝(1.96 m)보다 높았다. 실기 검증이나 펌웨어 적용은 하지 않았다.
+
+#### GRU 수렴 진단
+
+```bash
+python scripts/benchmark_window_replay.py \
+  --ukf-replay ../../Avionics/flight-computer/.pio/tools/ukf_replay.exe \
+  --output-dir data/experiments/apogee-v2-m7-ukf-convergence \
+  --train-window 100 --epochs 240 --trace-convergence
+```
+
+데이터·분할·센서 조건과 학습률 스케줄은 기존 창 비교와 동일하다.
+진단 모드에서만 조기 종료를 건너뛰고, 각 시드의 `epoch_history.csv`에
+훈련 중 배치 손실의 샘플 가중 평균, 검증 손실, 학습률, 검증 아포지
+직전 1초 MAE, 최저 검증 손실 이후 경과 epoch를 기록한다. 체크포인트는
+기존과 같이 검증 손실로 선택하며, 아포지 직전 MAE는 별도 진단 지표다.
+
+#### 훈련 전용 기압 누락 증강
+
+```bash
+python scripts/benchmark_window_replay.py \
+  --ukf-replay ../../Avionics/flight-computer/.pio/tools/ukf_replay.exe \
+  --output-dir data/experiments/apogee-v2-m7-ukf-burst-aug \
+  --train-window 100 --epochs 240 --trace-convergence --augment-baro
+python data/experiments/apogee-v2-m7-ukf-burst-aug/compare_augmentation.py
+```
+
+기존 훈련 비행에만 기압 잡음·기본 도착 지연·연속 누락 길이가 각각
+0.95 m / 40 ms / 2샘플, 1.25 m / 50 ms / 3샘플인 관측을 추가한다.
+누락은 비행이 움직이기 시작한 뒤 합성하며 IMU는 그대로 둔다. 정규화는
+증강한 훈련 창에서 다시 맞추고, UKF 복구 마스크와 기존 검증·시험 비행 및
+센서 프로파일은 바꾸지 않는다. 비교 스크립트는 동일 창에서 기준 모델과
+비교하고, 별도의 4샘플 연속 누락 조건과 `112.txt`의 기존 두 리플레이
+가정도 확인한다. 추가 프로파일 수치는 실측 센서 사양이 아니다.
+
+#### `112.txt` 10시드 비교
+
+위 증강 실험의 시드 42·43을 재사용한다. 같은 옵션으로 `--output-dir`의
+끝에 `seed-study-batch-a`와 `seed-study-batch-b`를 각각 붙이고, 시드를
+`--seeds 504723 873529 698543 608065`와 `--seeds 650042 313474 733519 487659`로
+지정해 추가 학습한다. 그 후 프로젝트 루트에서 실행한다.
+
+```bash
+python data/experiments/apogee-v2-m7-ukf-burst-aug/plot_112_seed_study.py
+```
+
+그래프는 실제 온보드 UKF 고도와 각 로그 행을 새 BMP 샘플로 간주한 리플레이의
+GRU 예측을 나란히 표시한다. CSV에는 기압값이 바뀐 행만 공급한 가정도 포함한다.
+시드 간 최솟값–최댓값은 모델 초기화에 따른 산포이며 실비행 오차나 신뢰구간이 아니다.
+
 ---
 
 ### [Step 5] Uncertainty Quantification: AI 의 자신감 측정
