@@ -208,7 +208,32 @@ roll :  ṗ = a·cant·q − b·q·p                     a = 1e-2, b = 3e-4
 | D18 | Step 3/4/5 실제 비행 파서 | 실제 로그 `Gyro` 는 deg/s, 시뮬 `gyro_*` 는 rad/s. 변환 없이 특징에 넣으면 57.3배 스케일 오류 | **정정 완료** — 파서에서 `np.deg2rad`, 문서 단위 rad/s 로 통일 |
 | D19 | Step 4/5/6 GRU | 시뮬 `altitude` 는 해발 고도로 발사대 407 m 고정, 실기 로그는 1.007~186.464 m. 절대고도를 그대로 특징·라벨·physics head에 쓰면 학습 범위 밖이며 `r` 상한 1.2로도 필요한 값을 표현 못 함 | **부분 정정** — Step 4/5/6을 발사대 상대고도(AGL)로 통일하고 `r=1+0.5·tanh`로 확장. sim test MAE 0.99 m, 실기 112 최종 raw 3.97 m(clamp 12.3%)이지만 t≈3 s raw 오차 −30.5 m와 단일 실기 로그 한계는 남음. Step 3 PINN은 별도 후속 |
 | D20 | feature/accelerometer 계약 | sim `acceleration_noisy`는 specific force(g 포함), 실기 `Accel_z`는 중력 제거 가속도. 같은 이름으로 섞으면 9.81 m/s² 편향 | **정정 완료** — 공통 `acceleration_inertial` 파생 필드와 scaler mean 이동 동치성. 원본 컬럼 보존. body 축 일치는 미확인 |
+| D22 | 실기 112 평가 기준 | 로그가 상승 중(마지막 v_z ≈ 6.5 m/s)에 끝나 관측 최대 185.2 m는 아포지의 **하한**이다. 이 값과의 차이(+3.85 m 등)를 과대추정으로 읽으면 안 된다 | **정정** — `apogee_physics.apogee_reference` 가 로그 관성 구간의 항력 상수 k(0.00110 1/m)로 남은 상승고도를 외삽한다: 187.2~187.4 m (KF 상태 / 기압+가속도 평활 상태). 독립 계측이 아닌 추정 |
+| D23 | 실기 112 KF 속도 | 112를 기록한 레거시 펌웨어(`flight-computer/legacy/src/main.cpp`)가 UKF에 `accel_z_in = d.accel[2]`(중력 제거, g 단위)를 넣었다. UKF는 m/s² 비력(specific force)을 기대한다(현행 `vertical_observation.h` 는 `linearG*9.81+9.81`). 로그의 `velo` 는 편향되어 있다 | 문서화 — 물리 기준선은 원시 기압(`Alt:`)+가속도 평활 상태로도 계산한다 |
+| D24 | `model_metadata.pkl` | `hidden_dim=128` 로 기록됐지만 저장 가중치는 64 유닛. Step 5/6 은 메타데이터로 모델을 만들므로 크기 불일치 | **정정** — Step 4 가 `gru_model.hidden_dim/num_layers` 를 기록 |
 | D21 | 학습/평가/배포 경로 | Step 4는 마지막 epoch 모델을 평가하면서 best checkpoint를 저장했고, clamp가 raw gradient와 아포지 오차를 가림. Step 5/6/CLI도 같은 계약을 쓰지 않음 | **부분 정정** — best state 복원, raw validation, projection 분리, 공통 endpoint/split manifest, 공통 raw benchmark 추가. torch 실행 제한으로 실제 benchmark·재학습은 미검증 |
+
+### 5.0 물리 기준선 — `apogee_physics.py`, `scripts/benchmark_physics_baseline.py`
+
+학습 없는 관성 구간 아포지 추정기. 연소 종료 후 `dv/dt = -g - k·v²` 의 닫힌 해
+`H = h + ln(1 + k·v²/g)/(2k)` 를 쓰고, `k` 는 중력 제거 가속도로 **측정**한다(`-a-g = k·v²`, 인과적 가중 최소제곱).
+관성 판정은 `a < -0.95g` 5샘플 + 0.5 s 안정화이며 연소 중에는 NaN 이다. `kinematic_smoother` 는 최근 1.5 s 의
+기압고도와 가속도 이중적분으로 h, v 를 최소제곱 추정한다. 설정은 모두 train+validation 비행에서만 정했다.
+
+test 25비행, **둘 다 정의된 관성 endpoint 482개** 비교 (`data/experiments/physics-baseline/`):
+
+| 상태 소스 | 물리 기준선 MAE (bias) | GRU MAE (bias) | 비고 |
+|:--|:--|:--|:--|
+| 시뮬 정답 h, v | **0.32 m** (+0.05) | 0.48 m (−0.16) | GRU = `best_gru_model.pth` (64×2) |
+| M7 UKF 리플레이, 물리는 UKF h, v 사용 | 8.74 m (+1.23) | 1.96 m (+0.27) | UKF 속도 오차 평균 5.0 m/s 가 v² 로 증폭 |
+| M7 UKF 리플레이, 물리는 평활 h, v 사용 | **1.29 m** (−0.08) | 1.96 m (+0.27) | GRU = 배포 펌웨어 가중치 (32×1, 증강 seed 42) |
+
+> M7 UKF 행: 배포 가중치는 `data/experiments/apogee-v2-m7-ukf-burst-aug/w100_seed42` (model.pth SHA-256
+> 69d1417d..., `flight-computer/src/m7/apogee_gru_weights.h` 와 일치). 상태는 `benchmark_apogee.py` 의 m7_ukf 와
+> 같은 리플레이 계약으로 만든다. 재현: `python scripts/benchmark_physics_baseline.py --state-source m7_ukf
+> --ukf-replay <flight-computer>/.pio/tools/ukf_replay --checkpoint <위 경로>/model.pth --scaler <위 경로>/scaler.pkl
+> --tag m7_ukf_deployed` (결과: `data/experiments/physics-baseline/m7_ukf_deployed/`).
+> 배포 GRU 는 아포지 0.5 s 이내에서도 +0.35 m, 4 s 이상 남은 구간에서 +2.2 m 의 양(과대) 편향을 보인다.
 
 ### 5.1 OOD 세트 (Step 5.5 용) — `data/simulated/ood/`
 
